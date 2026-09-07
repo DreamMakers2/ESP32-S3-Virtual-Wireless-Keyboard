@@ -1,0 +1,9 @@
+/* Compilation-only fixture. Never flash this image: it deliberately disables output. */
+#pragma once
+#define BRIDGE_PAIR_CHANNEL 6
+#define BRIDGE_OWN_MAC { 0x02, 0x00, 0x00, 0x00, 0x00, 0x0a }
+#define BRIDGE_PEER_MAC { 0x02, 0x00, 0x00, 0x00, 0x00, 0x0b }
+#define BRIDGE_PMK { 0 }
+#define BRIDGE_LMK { 0 }
+#define BRIDGE_DEVICE_LABEL "NONDEPLOYABLE fixture"
+#define BRIDGE_RGB_GPIO 48

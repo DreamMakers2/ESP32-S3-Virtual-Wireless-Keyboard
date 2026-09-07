@@ -1,0 +1,26 @@
+[package]
+name = "keyboard-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "Native controller for the ESP32-S3 wireless keyboard bridge"
+license-file = "../LICENSE"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+directories = "6.0"
+eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.32"
+evdev = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9"
+serialport = { version = "4.8", default-features = false }
+xkbcommon = "0.8"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[[bin]]
+name = "keyboard-bridge"
+path = "src/main.rs"

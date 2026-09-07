@@ -1,0 +1,26 @@
+ESP32-S3 Virtual Wireless Keyboard
+Copyright 2026 DreamMakers2 and contributors
+
+Project-original code is provided under Apache License 2.0 with Commons Clause
+License Condition v1.0. See LICENSE for the complete terms.
+
+This project uses Espressif ESP-IDF, esp_tinyusb and led_strip, TinyUSB, Rust
+crates listed in app/Cargo.lock, and Linux native libraries. These dependencies
+retain their own copyright notices and licenses. The project's Commons Clause
+does not replace the licenses of those separately licensed upstream components.
+
+References used in the implementation:
+- Espressif ESP-IDF USB device and ESP-NOW APIs and examples
+  https://github.com/espressif/esp-idf
+- Espressif USB device integration
+  https://github.com/espressif/esp-usb
+- TinyUSB HID device interfaces and examples
+  https://github.com/hathach/tinyusb
+- egui/eframe native UI
+  https://github.com/emilk/egui
+- libxkbcommon keyboard interpretation
+  https://xkbcommon.org/
+
+Retain upstream notices when distributing their source or binaries. Dependency
+lockfiles identify the resolved sources; generated/private firmware images are
+not part of this source distribution.

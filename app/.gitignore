@@ -1,0 +1,4 @@
+/bin/keyboard-bridge
+/build/cargo-home/
+/build/target/
+!/build/.gitkeep

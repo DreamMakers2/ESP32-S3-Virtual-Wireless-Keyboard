@@ -1,0 +1,8 @@
+menu "Keyboard bridge"
+config BRIDGE_TEST_FIXTURE
+    bool "Build nondeployable test fixture"
+    default n
+    help
+        Allows a compile-only dummy pair configuration. The resulting image
+        deliberately has no ESP-NOW or HID output and must never be flashed.
+endmenu

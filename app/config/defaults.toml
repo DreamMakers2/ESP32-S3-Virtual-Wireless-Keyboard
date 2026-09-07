@@ -1,0 +1,6 @@
+# Copy this file to $XDG_CONFIG_HOME/keyboard-bridge/config.toml and set both paths.
+# Persistent /dev/input/by-id and /dev/serial/by-id paths avoid unstable event/tty numbers.
+keyboard_path = ""
+cdc_path = ""
+theme = "dark"
+debug = false
