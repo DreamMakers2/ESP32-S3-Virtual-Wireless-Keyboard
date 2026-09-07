@@ -22,7 +22,11 @@ file. Set `keyboard_path` and `cdc_path` to the persistent paths listed by:
 ls -l /dev/input/by-id/*-event-kbd /dev/serial/by-id/*
 ```
 
-Choose the physical keyboard and bridge A's **native USB/OTG** CDC interface.
+Choose the physical keyboard for `keyboard_path`. For `cdc_path`, choose bridge A's
+CDC serial device while bridge A is connected through the port marked **USB/OTG**
+on the PCB. The port marked **COM/UART** on the PCB is for flashing and maintenance,
+not normal app communication.
+
 See [device permissions](config/linux-permissions.md). Then run `app/run.sh`.
 The launcher does not install packages. The packaged executable lives in `app/bin`;
 Cargo dependencies and build products remain in `app/build`.
