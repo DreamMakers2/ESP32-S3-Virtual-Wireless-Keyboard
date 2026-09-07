@@ -42,9 +42,9 @@ wrong peer MAC before processing. Oversized CDC input discards through delimiter
 STATUS contains the latest target output-report LED byte, including after app
 reconnection. The current B implementation leaves STATUS.error at zero; active
 failures are detected through epoch/readiness changes and A's ERROR messages.
-Boot scalars are the firmware timer readings after local USB/radio initialization
-returns. Radio-ready is the separate timer reading when ESP-NOW becomes available;
-these are not host USB-enumeration duration measurements.
+Boot scalars record the firmware timer after local USB/radio initialization
+returns. Radio-ready is recorded separately when ESP-NOW becomes available,
+providing firmware-side initialization timing for both bridge roles.
 
 ## Session and transport rules
 
@@ -81,5 +81,5 @@ Do not use CDC DTR as a substitute for the application heartbeat lease.
 Retain only boot-duration scalars when debug is off. With debug on, SYNC exchanges
 at one-second cadence estimate Linux/B offset from minimum-round-trip samples.
 ACK completion timestamps correlate by session, epoch and sequence. Keep only
-the latest 20 completed keypress latency samples. Report unavailable until a
-valid clock estimate exists; USB completion is not target application receipt.
+the latest 20 completed keypress latency samples. Latency samples are reported
+after a valid clock estimate exists and represent USB HID completion at bridge B.
