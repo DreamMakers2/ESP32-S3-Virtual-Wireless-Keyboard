@@ -1,6 +1,6 @@
 # Security
 
-This is a fixed-pair hobby keyboard bridge. Radio traffic uses encrypted ESP-NOW
+This project uses a fixed-pair keyboard bridge. Radio traffic uses encrypted ESP-NOW
 unicast with private PMK/LMK values and explicit peer identity filters. Application
 sessions and acknowledgements prevent stale or duplicate input from being applied
 as new transitions. These mechanisms do not make the boards tamper-resistant.
