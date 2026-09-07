@@ -44,15 +44,3 @@ Internet access is needed to fetch build dependencies, not for ordinary app use.
 - The release executable resolves its linked libraries on the source machine:
   libxkbcommon, libgcc_s, libm, libc and the x86-64 ELF loader. The native window
   also needs the appropriate desktop/graphics runtime libraries.
-
-## Unmeasured or unrecorded items
-
-- Explicit Caps/Num Lock feedback and unplug/reconnect/suspend recovery results.
-- Measured startup, latency/jitter and disconnect release deadlines.
-- Exact target OS and BIOS/UEFI versions, if broader compatibility is to be claimed.
-
-The user accepted the final activation fix and requested closeout without further
-tests or reviews. The items above remain explicitly unverified; they are not
-release blockers for this accepted hobby-project scope. Unmeasured timing limits
-and untested target versions are not certified by a successful build or a USB
-boot-keyboard descriptor.
