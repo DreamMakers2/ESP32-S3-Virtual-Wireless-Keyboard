@@ -4,8 +4,8 @@
 
 - Two ESP32-S3 N16R8 boards with 16 MB flash and 8 MB PSRAM.
 - Two data-capable USB connections for setup.
-- One native USB connection from bridge A to the Linux computer during normal use.
-- One native USB connection from bridge B to the target during normal use.
+- One native USB connection from bridge A to the Linux computer during normal use, through the port marked **USB/OTG** on the PCB.
+- One native USB connection from bridge B to the target during normal use, through the port marked **USB/OTG** on the PCB.
 - A physical keyboard connected to the Linux computer.
 - A mouse or other pointing device for entering and leaving the app's capture window.
 - Onboard addressable RGB LED support. GPIO48 is the normal configuration for the boards used by this project; GPIO38 is available for compatible revisions wired that way.
@@ -43,4 +43,4 @@ The normal bridge path is:
 physical keyboard → Linux app → bridge A → encrypted ESP-NOW → bridge B → USB HID target
 ```
 
-Bridge A uses native USB CDC on the Linux side. Bridge B presents itself to the target as a native USB HID keyboard. COM/UART remains available for flashing, identification and maintenance.
+Bridge A uses native USB CDC through the port marked **USB/OTG** on the PCB. Bridge B presents itself to the target as a native USB HID keyboard through its **USB/OTG**-marked PCB port. The port marked **COM/UART** on each PCB is used for flashing, identification and maintenance.
