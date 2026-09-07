@@ -36,10 +36,10 @@ See [the protocol](docs/PROTOCOL.md) and [security notes](SECURITY.md) for the d
 
 The project uses two ESP32-S3 N16R8 boards:
 
-- **Bridge A** connects to the Linux computer over native USB CDC.
-- **Bridge B** connects to the target as a native USB HID keyboard.
-- **COM/UART** is used for flashing and maintenance.
-- **USB/OTG** is used for normal bridge operation.
+- **Bridge A** connects to the Linux computer through the port marked **USB/OTG** on the PCB and uses native USB CDC.
+- **Bridge B** connects to the target through the port marked **USB/OTG** on the PCB and appears as a native USB HID keyboard.
+- The port marked **COM/UART** on the PCB is used for flashing and maintenance.
+- The port marked **USB/OTG** on the PCB is used for normal bridge operation.
 
 ## Getting started
 
@@ -54,4 +54,4 @@ More detailed references:
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
-For first setup, flash and identify bridge B first, move it to the target machine, then flash bridge A and connect it to the Linux computer. Use a blank editor on the target for the first typing test before trying BIOS/UEFI or another sensitive screen.
+For first setup, flash and identify bridge B first, move it to the target machine, then connect it through the port marked **USB/OTG** on the PCB. Flash bridge A next and connect it to the Linux computer through its **USB/OTG**-marked PCB port. Use a blank editor on the target for the first typing test before trying BIOS/UEFI or another sensitive screen.
