@@ -1,12 +1,14 @@
 # ESP32-S3 Virtual Wireless Keyboard
 
-A focused Linux keyboard window connected to a remote USB keyboard over encrypted ESP-NOW.
+A focused wireless keyboard bridge for Linux, built around two ESP32-S3 boards and encrypted ESP-NOW.
 
 ![Hardware](https://img.shields.io/badge/hardware-ESP32--S3-blue)
 ![Desktop](https://img.shields.io/badge/desktop-Linux-blue)
-![Status](https://img.shields.io/badge/status-working%20prototype-green)
+![Status](https://img.shields.io/badge/status-working-green)
 
-The project uses two ESP32-S3 N16R8 boards:
+Sometimes the machine you need to type on is not at your desk. It might be a server in another room, a bench PC, a BIOS screen, or a machine you simply do not want to keep moving a keyboard between.
+
+This project turns one physical keyboard into a small wireless input bridge. Plug bridge A into the Linux computer, plug bridge B into the remote target, launch the app, and type on the remote machine without disconnecting and carrying your keyboard back and forth.
 
 ```text
 Linux keyboard → native app → USB CDC → bridge A
@@ -14,39 +16,42 @@ Linux keyboard → native app → USB CDC → bridge A
 Target / BIOS  ← USB HID keyboard ← bridge B
 ```
 
-This hobby project has been tested with two ESP32-S3 N16R8 boards, a Linux KDE
-Wayland source desktop, remote typing and shortcuts, and the target BIOS/UEFI.
-See [verified acceptance and remaining measurements](docs/REQUIREMENTS.md).
+## Built to stay deliberate
 
-The app captures one configured physical keyboard only after an explicit click
-inside its focused window. Mouse focus loss pauses capture and releases the remote
-keys. Shortcuts go to the target while capture is active. The app's visible typing
-history is separate from the physical HID state sent to the target.
+The desktop app only captures the configured physical keyboard after you explicitly activate its focused input window. Click away, close the window, lose the device, or lose the bridge connection and capture stops; the remote key state is released as part of that fail-closed behavior.
+
+That makes the bridge easy to trust in day-to-day use: outside the active window, your keystrokes stay local. While the bridge is connected, the app and both ESP32-S3 boards provide clear status feedback. Connected/paused, active, key activity, and error states are visible through the app and LEDs, so you can tell when the link is ready and when input is actually being transmitted.
+
+The local typing history is display-only and separate from the HID state sent to the target. No keystroke log is written to disk.
+
+## A deliberately hardened bridge protocol
+
+Security and transport behavior are core parts of the design rather than an add-on. The radio link uses encrypted ESP-NOW unicast with pair-specific PMK/LMK keys and explicit peer identity checks. The bridge protocol adds fresh sessions and receiver epochs, ordered transition sequencing, acknowledgements, liveness timeouts, and CRC-32/ISO-HDLC validation for every packet.
+
+Malformed packets, bad CRCs, stale sessions, unexpected peers, sequence errors, and link failures are rejected or fail closed instead of being treated as keyboard input. Pair-specific keys and identifiers are generated locally and never belong in Git, and the app has no runtime account or network-service dependency.
+
+See [the protocol](docs/PROTOCOL.md) and [security notes](SECURITY.md) for the details.
+
+## Hardware
+
+The project uses two ESP32-S3 N16R8 boards:
+
+- **Bridge A** connects to the Linux computer over native USB CDC.
+- **Bridge B** connects to the target as a native USB HID keyboard.
+- **COM/UART** is used for flashing and maintenance.
+- **USB/OTG** is used for normal bridge operation.
 
 ## Getting started
 
-- [Implementation plan](docs/IMPLEMENTATION_PLAN.md)
-- [Setup](docs/SETUP.md) and [verified requirements](docs/REQUIREMENTS.md)
-- [Application launch and configuration](app/README.md)
+Start with the [setup guide](docs/SETUP.md). It walks through the process from a fresh checkout to a working pair.
+
+More detailed references:
+
+- [Application build, configuration and operation](app/README.md)
 - [Firmware build and provisioning](firmware/README.md)
-- [Technical concept](Technical%20Concept%20%E2%80%94%20ESP32-S3%20Wireless%20USB%20Keyboard%20Bridge.md)
-- [Binary protocol](docs/PROTOCOL.md)
-- [Security](SECURITY.md), [contributing](CONTRIBUTING.md), and [release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md)
+- [Requirements and compatibility](docs/REQUIREMENTS.md)
+- [Binary bridge protocol](docs/PROTOCOL.md)
+- [Security](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
 
-Use connector labels: **COM/UART** for flashing and maintenance, **USB/OTG** for
-native CDC on A or native HID on B. Left/right descriptions depend on board layout.
-Flash and verify B first, identify it, move it to the target PC, then flash A and
-move it to the local native USB connection. Do not type test input until the target
-has a suitable text editor focused and both devices are ready.
-
-Pair-specific keys and identifiers are generated locally and never belong in Git.
-The app has no runtime network service or account dependency.
-
-## License
-
-Project code is licensed under Apache License 2.0 with Commons Clause 1.0.
-Use, modification and redistribution are permitted subject to those terms,
-including preservation of required notices. It is source-available; the Commons
-Clause restricts selling the software, including covered paid services, as defined
-in [LICENSE](LICENSE). Third-party
-dependencies retain their own licenses and notices; see [NOTICE](NOTICE).
+For first setup, flash and identify bridge B first, move it to the target machine, then flash bridge A and connect it to the Linux computer. Use a blank editor on the target for the first typing test before trying BIOS/UEFI or another sensitive screen.
