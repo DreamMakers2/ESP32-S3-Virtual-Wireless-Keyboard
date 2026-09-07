@@ -7,10 +7,10 @@ You will use two ESP32-S3 boards:
 - **Bridge A** stays with the Linux computer and talks to the desktop app over USB CDC.
 - **Bridge B** stays with the remote target and appears there as a USB keyboard.
 
-Each board has two USB roles to keep straight:
+Always identify the USB connectors by the markings printed on the PCB:
 
-- **COM/UART**: flashing, identification and maintenance.
-- **USB/OTG**: normal bridge operation.
+- Port marked **COM/UART**: flashing, identification and maintenance.
+- Port marked **USB/OTG**: normal bridge operation.
 
 ## 1. Get the project and install the tools
 
@@ -20,9 +20,9 @@ Follow the toolchain instructions in [firmware/README.md](../firmware/README.md)
 
 The firmware setup creates project-local tools under `.tools/`, so the repository can use the expected ESP-IDF, CMake and esptool versions without changing the normal app launch flow.
 
-## 2. Connect both ESP32-S3 boards over COM/UART
+## 2. Connect both ESP32-S3 boards through the COM/UART-marked port
 
-For initial setup, connect both boards using their **COM/UART** ports.
+For initial setup, connect both boards through the port marked **COM/UART** on the PCB.
 
 Find their persistent Linux device paths:
 
@@ -70,7 +70,7 @@ firmware/tools/idf.sh -C firmware/bridge-a build
 
 ## 6. Flash bridge B first
 
-Flash the board you assigned as bridge B:
+Flash the board you assigned as bridge B while it is connected through the port marked **COM/UART** on the PCB:
 
 ```sh
 .tools/python/bin/python firmware/tools/flash.py b --port <B-UART-path>
@@ -88,14 +88,14 @@ Bridge B uses a repeating **two-pulse magenta** identification pattern.
 
 Once identified:
 
-1. Disconnect bridge B from COM/UART.
+1. Disconnect bridge B from the **COM/UART**-marked port.
 2. Move it to the remote target machine.
-3. Connect it using **USB/OTG**.
+3. Connect the target to the port marked **USB/OTG** on the PCB.
 4. The target should see it as a USB keyboard.
 
 ## 7. Flash bridge A
 
-Flash the remaining board as bridge A:
+Flash the remaining board as bridge A through the port marked **COM/UART** on the PCB:
 
 ```sh
 .tools/python/bin/python firmware/tools/flash.py a --port <A-UART-path>
@@ -109,7 +109,7 @@ You can identify it the same way:
 
 Bridge A uses a repeating **one-pulse magenta** identification pattern.
 
-Then disconnect it from COM/UART and reconnect it to the Linux computer using **USB/OTG**.
+Then disconnect it from the **COM/UART**-marked port and reconnect it to the Linux computer through the port marked **USB/OTG** on the PCB.
 
 ## 8. Configure the Linux app
 
@@ -122,7 +122,7 @@ ls -l /dev/input/by-id/*-event-kbd /dev/serial/by-id/*
 Follow [app/README.md](../app/README.md) to create the app configuration and set:
 
 - `keyboard_path` to the physical keyboard you want the app to capture.
-- `cdc_path` to bridge A's native USB/OTG CDC device.
+- `cdc_path` to the serial device exposed by bridge A while it is connected through the port marked **USB/OTG** on the PCB.
 - the keyboard layout to match the source and target layout.
 
 Give your normal desktop user access to the selected input and serial devices. Do **not** run the GUI as root. See [Linux permissions](../app/config/linux-permissions.md) for the recommended setup.
@@ -146,8 +146,8 @@ Once ordinary desktop input is working, you can use the same bridge for BIOS/UEF
 ## Troubleshooting
 
 - **Permission denied:** make sure your desktop user can access the configured `/dev/input` and `/dev/serial` devices. A valid `/dev/.../by-id` path can still point to a device your user cannot open.
-- **No USB device on the target:** make sure bridge B is connected through **USB/OTG**, not COM/UART, and use a data-capable USB cable.
-- **Bridge A is not appearing in the app:** make sure A is also connected through **USB/OTG** and that `cdc_path` points to its persistent serial path.
+- **No USB device on the target:** make sure bridge B is connected through the port marked **USB/OTG** on the PCB, not the **COM/UART**-marked port, and use a data-capable USB cable.
+- **Bridge A is not appearing in the app:** make sure A is connected through the port marked **USB/OTG** on the PCB and that `cdc_path` points to its persistent serial path.
 - **Dark RGB LED:** check the configured RGB GPIO and remember that the ordinary status indication sleeps after five minutes.
 - **Wrong characters:** make sure the source XKB layout and target keyboard layout match. The target receives physical HID usages.
 - **Connection lost:** capture stays paused until the bridge chain is ready again and you explicitly reactivate the app.
