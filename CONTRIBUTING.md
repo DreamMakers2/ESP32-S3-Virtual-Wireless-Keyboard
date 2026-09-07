@@ -1,13 +1,12 @@
 # Contributing
 
-Keep changes small and appropriate for a hobby project. Read the
-technical concept before changing behavior. Preserve focus-bound capture, ordered
-key transitions and release-on-failure semantics. Avoid unrelated infrastructure.
+Keep changes focused, easy to review, and aligned with the bridge's core behavior.
+Preserve focus-bound capture, ordered key transitions, and release-on-failure
+semantics. Avoid unrelated infrastructure changes.
 
-For protocol changes, update docs/PROTOCOL.md and both C/Rust implementations and
-fixtures together. Run the relevant app tests and both firmware builds. Changes
-to capture, USB or radio behavior also require hardware acceptance; describe any
-tests that could not be run instead of presenting build success as device proof.
+For protocol changes, update `docs/PROTOCOL.md` and both C/Rust implementations and
+fixtures together. Run the relevant app tests and both firmware builds. Changes to
+capture, USB, or radio behavior should include the corresponding hardware checks.
 
 Never contribute pairing keys, real device identifiers, captured typing, logs
 containing personal data, or provisioned firmware binaries. Use synthetic fixtures.
