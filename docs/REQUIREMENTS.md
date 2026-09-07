@@ -1,46 +1,46 @@
-# Requirements and validation status
+# Requirements and compatibility
 
-## Hardware observed
+## Hardware
 
-- Two ESP32-S3 chips, revision v0.2, with 16 MB quad flash at 3.3 V and embedded
-  8 MB AP_3v3 PSRAM, confirmed by esptool over COM/UART.
-- Two data-capable USB connections for setup. In use, one native USB connection
-  joins A to Linux and one joins B to the target.
-- Keychron K5 source keyboard and a mouse that remains available to change focus.
-- Onboard addressable RGB LED. GPIO48 is visibly verified on this pair;
-  reference-board revisions may instead use GPIO38.
+- Two ESP32-S3 N16R8 boards with 16 MB flash and 8 MB PSRAM.
+- Two data-capable USB connections for setup.
+- One native USB connection from bridge A to the Linux computer during normal use.
+- One native USB connection from bridge B to the target during normal use.
+- A physical keyboard connected to the Linux computer.
+- A mouse or other pointing device for entering and leaving the app's capture window.
+- Onboard addressable RGB LED support. GPIO48 is the normal configuration for the boards used by this project; GPIO38 is available for compatible revisions wired that way.
 
-The minimum supported firmware configuration is the tested N16R8 target. Smaller
-flash/PSRAM variants have not been qualified. No minimum radio range is claimed.
+The firmware configuration targets ESP32-S3 N16R8 hardware.
 
-## Software observed
+## Linux application
 
-- Linux KDE Wayland desktop; CachyOS is the intended source platform.
-- Rust 1.98.1 / Cargo 1.98.1 available for the application build.
-- libxkbcommon 1.13.2, Wayland client 1.26.0, fontconfig 2.18.3 and libudev 261.
-- Project-local ESP-IDF 5.5.5, its selected ESP32-S3 toolchain and Python environment;
-  CMake 3.30.9. System esptool 5.3.1 handles the maintenance tools.
+- Linux desktop with Wayland or X11.
+- CachyOS / KDE Wayland is the primary source-platform configuration.
+- Rust 1.98.1 / Cargo 1.98.1.
+- libxkbcommon 1.13.2.
+- Wayland client 1.26.0.
+- fontconfig 2.18.3.
+- libudev 261.
+- A working OpenGL-capable graphics driver for the egui renderer.
+- Access to the selected `/dev/input` keyboard device and bridge A's serial device as the normal desktop user.
 
-Cargo.lock and the firmware dependency locks define the build's resolved packages.
-Native runtime shared-library dependencies must be checked against the actual
-release executable before packaging. A GPU/driver capable of the selected egui
-renderer is required; exact minimum GPU, RAM and storage have not been measured.
-Internet access is needed to fetch build dependencies, not for ordinary app use.
+Cargo.lock defines the application's resolved Rust packages. Internet access is required when fetching build dependencies; ordinary application use has no runtime account or network-service dependency.
 
-## Verified acceptance
+## Firmware toolchain
 
-- Both firmware targets build. Both boards were flashed in B-first order; all
-  image digests and production role/radio startup were verified.
-- Source is Linux KDE Wayland with a Keychron K5. The user confirmed remote
-  typing, modifiers/shortcuts, repeated activation after focus loss, and sustained
-  connection. The exact target OS/version has not yet been recorded.
-- The user confirmed keyboard operation in the actual target BIOS/UEFI. Its
-  vendor/version has not been recorded; this is not a universal BIOS claim.
-- The user accepted steady paused green on both devices and app, Pause/Activate
-  menu, history fading, overlay width, dot placement and scrollbar behavior.
-- Native dark/normal and light/small/debug renders were inspected with populated
-  history. App release tests cover protocol framing, physical key state, focus
-  revocation, repeated activation, live serial disconnection and timeout recovery.
-- The release executable resolves its linked libraries on the source machine:
-  libxkbcommon, libgcc_s, libm, libc and the x86-64 ELF loader. The native window
-  also needs the appropriate desktop/graphics runtime libraries.
+- ESP-IDF 5.5.5 with the ESP32-S3 toolchain.
+- Python 3.
+- CMake 3.30.9.
+- esptool 5.3.1 for the maintenance and flashing helpers.
+
+Firmware component manifests and dependency locks define the resolved embedded dependencies.
+
+## Runtime layout
+
+The normal bridge path is:
+
+```text
+physical keyboard → Linux app → bridge A → encrypted ESP-NOW → bridge B → USB HID target
+```
+
+Bridge A uses native USB CDC on the Linux side. Bridge B presents itself to the target as a native USB HID keyboard. COM/UART remains available for flashing, identification and maintenance.
