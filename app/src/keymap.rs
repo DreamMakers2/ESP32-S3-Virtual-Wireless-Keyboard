@@ -94,26 +94,161 @@ pub fn hid_usage(key: u16) -> Option<(u8, u8)> {
     Some((usage, 0))
 }
 
+/// Stable names for keys supported by the HID map. These are deliberately
+/// independent of XKB text: `Ctrl+Tab` must not acquire a literal tab
+/// character, and a shortcut label should not vary with the desktop layout.
+pub fn key_label(key: u16) -> Option<&'static str> {
+    Some(match key {
+        1 => "Esc",
+        2 => "1",
+        3 => "2",
+        4 => "3",
+        5 => "4",
+        6 => "5",
+        7 => "6",
+        8 => "7",
+        9 => "8",
+        10 => "9",
+        11 => "0",
+        12 => "Minus",
+        13 => "Equal",
+        14 => "Backspace",
+        15 => "Tab",
+        16 => "Q",
+        17 => "W",
+        18 => "E",
+        19 => "R",
+        20 => "T",
+        21 => "Y",
+        22 => "U",
+        23 => "I",
+        24 => "O",
+        25 => "P",
+        26 => "LeftBracket",
+        27 => "RightBracket",
+        28 => "Enter",
+        30 => "A",
+        31 => "S",
+        32 => "D",
+        33 => "F",
+        34 => "G",
+        35 => "H",
+        36 => "J",
+        37 => "K",
+        38 => "L",
+        39 => "Semicolon",
+        40 => "Apostrophe",
+        41 => "Grave",
+        43 => "Backslash",
+        44 => "Z",
+        45 => "X",
+        46 => "C",
+        47 => "V",
+        48 => "B",
+        49 => "N",
+        50 => "M",
+        51 => "Comma",
+        52 => "Period",
+        53 => "Slash",
+        55 => "KeypadAsterisk",
+        57 => "Space",
+        58 => "CapsLock",
+        59 => "F1",
+        60 => "F2",
+        61 => "F3",
+        62 => "F4",
+        63 => "F5",
+        64 => "F6",
+        65 => "F7",
+        66 => "F8",
+        67 => "F9",
+        68 => "F10",
+        69 => "NumLock",
+        70 => "ScrollLock",
+        71 => "Keypad7",
+        72 => "Keypad8",
+        73 => "Keypad9",
+        74 => "KeypadMinus",
+        75 => "Keypad4",
+        76 => "Keypad5",
+        77 => "Keypad6",
+        78 => "KeypadPlus",
+        79 => "Keypad1",
+        80 => "Keypad2",
+        81 => "Keypad3",
+        82 => "Keypad0",
+        83 => "KeypadDecimal",
+        87 => "F11",
+        88 => "F12",
+        96 => "KeypadEnter",
+        98 => "KeypadSlash",
+        99 => "PrintScreen",
+        102 => "Home",
+        103 => "Up",
+        104 => "PageUp",
+        105 => "Left",
+        106 => "Right",
+        107 => "End",
+        108 => "Down",
+        109 => "PageDown",
+        110 => "Insert",
+        111 => "Delete",
+        119 => "Pause",
+        _ => return None,
+    })
+}
+
+/// Side-specific modifier labels are only emitted for a standalone tap.
+pub fn modifier_label(key: u16) -> Option<&'static str> {
+    Some(match key {
+        29 => "LCtrl",
+        97 => "RCtrl",
+        42 => "LShift",
+        54 => "RShift",
+        56 => "LAlt",
+        100 => "RAlt",
+        125 => "LSuper",
+        126 => "RSuper",
+        _ => return None,
+    })
+}
+
+/// Label for a key which has no printable XKB representation in normal text.
 pub fn special_token(key: u16) -> Option<&'static str> {
     Some(match key {
         1 => "[Esc]",
         15 => "[Tab]",
-        28 | 96 => "[Enter]",
-        57 => " ",
-        59..=68 => match key {
-            59 => "[F1]",
-            60 => "[F2]",
-            61 => "[F3]",
-            62 => "[F4]",
-            63 => "[F5]",
-            64 => "[F6]",
-            65 => "[F7]",
-            66 => "[F8]",
-            67 => "[F9]",
-            _ => "[F10]",
-        },
+        58 => "[CapsLock]",
+        59 => "[F1]",
+        60 => "[F2]",
+        61 => "[F3]",
+        62 => "[F4]",
+        63 => "[F5]",
+        64 => "[F6]",
+        65 => "[F7]",
+        66 => "[F8]",
+        67 => "[F9]",
+        68 => "[F10]",
+        69 => "[NumLock]",
+        70 => "[ScrollLock]",
+        71 => "[Keypad7]",
+        72 => "[Keypad8]",
+        73 => "[Keypad9]",
+        74 => "[KeypadMinus]",
+        75 => "[Keypad4]",
+        76 => "[Keypad5]",
+        77 => "[Keypad6]",
+        78 => "[KeypadPlus]",
+        79 => "[Keypad1]",
+        80 => "[Keypad2]",
+        81 => "[Keypad3]",
+        82 => "[Keypad0]",
+        83 => "[KeypadDecimal]",
         87 => "[F11]",
         88 => "[F12]",
+        96 => "[KeypadEnter]",
+        98 => "[KeypadSlash]",
+        99 => "[PrintScreen]",
         102 => "[Home]",
         103 => "[Up]",
         104 => "[PgUp]",
@@ -134,8 +269,16 @@ mod tests {
     use super::*;
     #[test]
     fn all_modifier_sides_use_their_hid_bits() {
-        for (key, bit) in [(29, 0x01), (42, 0x02), (56, 0x04), (125, 0x08),
-                           (97, 0x10), (54, 0x20), (100, 0x40), (126, 0x80)] {
+        for (key, bit) in [
+            (29, 0x01),
+            (42, 0x02),
+            (56, 0x04),
+            (125, 0x08),
+            (97, 0x10),
+            (54, 0x20),
+            (100, 0x40),
+            (126, 0x80),
+        ] {
             assert_eq!(hid_usage(key), Some((0, bit)), "evdev key {key}");
         }
     }
@@ -143,5 +286,18 @@ mod tests {
     fn modifiers_do_not_enter_bitmap() {
         assert_eq!(hid_usage(29), Some((0, 1)));
         assert_eq!(hid_usage(30), Some((4, 0)));
+    }
+    #[test]
+    fn every_supported_hid_key_has_a_history_name() {
+        for key in 0..=126 {
+            let Some((_usage, modifier)) = hid_usage(key) else {
+                continue;
+            };
+            if modifier == 0 {
+                assert!(key_label(key).is_some(), "evdev key {key}");
+            } else {
+                assert!(modifier_label(key).is_some(), "evdev key {key}");
+            }
+        }
     }
 }

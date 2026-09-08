@@ -59,6 +59,13 @@ affect only that local history. Source interpretation uses the XKB layout select
 by the environment; ensure it matches the target's layout. The target receives
 physical HID usages.
 
+Special keys appear as spaced tokens, such as `Hello [Tab] World [F2] Test`.
+Shortcuts include all held modifiers, such as `[Ctrl+Alt+Delete]`, without
+translated control characters. Modifier taps appear on release with side-specific
+names such as `[RCtrl]` and `[RAlt]`; modifiers used with another key do not also
+produce standalone tokens. Shift and AltGr keep producing normal printable text.
+Unmodified Enter, deletion, and caret navigation retain their live history behavior.
+
 Preferences live in `${XDG_CONFIG_HOME:-$HOME/.config}/keyboard-bridge/config.toml`.
 Debug is off by default. It enables timing exchanges and shows current timings,
 errors, and the last twenty completed press samples. Firmware completion latency

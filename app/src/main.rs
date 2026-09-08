@@ -193,6 +193,7 @@ impl BridgeApp {
         let _ = self.link_tx.send(LinkCommand::Stop);
         self.active = false;
         self.hid = HidState::default();
+        self.history.clear_pending_modifiers();
         self.xkb = XkbHistory::new().ok();
     }
     fn accept_key(&mut self, code: u16, pressed: bool, received_us: u64) {
@@ -204,7 +205,7 @@ impl BridgeApp {
                 xkb.press(&mut self.history, code, self.hid.modifiers);
             }
         } else if let Some(xkb) = self.xkb.as_mut() {
-            xkb.release(code);
+            xkb.release(&mut self.history, code);
         }
         if self.hid.apply(code, pressed) {
             let _ = self.link_tx.send(LinkCommand::State {
