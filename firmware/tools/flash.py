@@ -66,7 +66,7 @@ def main():
                "verified_at_unix": int(time.time()),
                "images": {str(image.relative_to(build)): digest(image) for _, image in artifacts}}
     (PRIVATE / f"flash-{args.role}.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    print("Flash bytes verified. UART startup, RGB identification and native USB still need checking.")
+    print("Flash bytes verified.")
 
 
 if __name__ == "__main__":
