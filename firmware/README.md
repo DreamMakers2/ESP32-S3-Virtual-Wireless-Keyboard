@@ -71,8 +71,9 @@ rm /tmp/bridge-session-test
 python3 -m unittest discover -s firmware/tools -p 'test_*.py'
 ```
 
-B briefly disconnects and re-enumerates after USB suspend so a retained pressed
-report cannot be delivered ahead of the released state. Capture remains paused
+A and B briefly disconnect and re-enumerate after USB suspend. A discards stale
+CDC state across the new USB attachment, while B prevents a retained pressed HID
+report from being delivered ahead of the released state. Capture remains paused
 until the app starts a new session. The stack uses Espressif's
 [USB device event API](https://docs.espressif.com/projects/esp-usb/en/latest/esp32s3/usb_device.html).
 

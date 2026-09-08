@@ -30,7 +30,7 @@ Security and transport behavior are core parts of the design rather than an add-
 
 Malformed packets, bad CRCs, stale sessions, unexpected peers, sequence errors, and link failures are rejected or fail closed instead of being treated as keyboard input. Pair-specific keys and identifiers are generated locally and never belong in Git, and the app has no runtime account or network-service dependency.
 
-See [the protocol](docs/PROTOCOL.md) and [security notes](SECURITY.md) for the details.
+See [the protocol](docs/PROTOCOL.md) and [security notes](docs/SECURITY.md) for the details.
 
 ## Hardware
 
@@ -51,7 +51,7 @@ More detailed references:
 - [Firmware build and provisioning](firmware/README.md)
 - [Requirements and compatibility](docs/REQUIREMENTS.md)
 - [Binary bridge protocol](docs/PROTOCOL.md)
-- [Security](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
+- [Security](docs/SECURITY.md)
+- [Contributing](docs/CONTRIBUTING.md)
 
 For first setup, flash and identify bridge B first, move it to the target machine, then connect it through the port marked **USB/OTG** on the PCB. Flash bridge A next and connect it to the Linux computer through its **USB/OTG**-marked PCB port. Use a blank editor on the target for the first typing test before trying BIOS/UEFI or another sensitive screen.

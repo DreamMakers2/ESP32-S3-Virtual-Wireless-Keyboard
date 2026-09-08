@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Keyboard Bridge
+Comment=Open the wireless keyboard controller
+Exec=bash -c '"$(dirname "$1")"/app/run.sh' dummy %k
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;

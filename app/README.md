@@ -6,7 +6,7 @@ Run these commands from the repository root. Install Rust/Cargo, a C compiler,
 `pkg-config`, and libxkbcommon development files first. On CachyOS/Arch, the
 corresponding packages are `rust`, `base-devel`, `pkgconf`, and `libxkbcommon`.
 The native GUI also needs a working OpenGL driver and a Wayland or X11 session.
-Required versions are listed in [requirements](../docs/REQUIREMENTS.md).
+Requirements and tested versions are listed in [requirements](../docs/REQUIREMENTS.md).
 
 ```sh
 app/build.sh
@@ -31,6 +31,11 @@ See [device permissions](config/linux-permissions.md). Then run `app/run.sh`.
 The launcher does not install packages. The packaged executable lives in `app/bin`;
 Cargo dependencies and build products remain in `app/build`.
 
+As an optional launch method, double-click `Keyboard Bridge.desktop` in the
+repository root after the app has been built and configured. The launcher resolves
+the checkout from its own location and runs the same `app/run.sh`. It does not
+install packages or use a project-specific configuration directory.
+
 ## Operation
 
 Click the rounded surface or choose **Activate** in its right-click menu to start
@@ -38,6 +43,10 @@ capture once the whole connection is ready. Clicking away, closing the window,
 losing the keyboard, or a communication failure stops forwarding and releases the
 local grab. Choose **Pause** from the menu to pause while retaining focus.
 Reconnection does not activate capture automatically.
+
+Serial failures are written to stderr with the operation, configured device path,
+and original error. Failed connections discard queued serial data before closing
+so stale output does not delay reopening a replacement CDC endpoint.
 
 Steady green `(0,64,0)` on the app and both boards means the whole chain is
 connected but paused: no keys are captured or transmitted. Active connection is

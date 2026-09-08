@@ -115,6 +115,7 @@ fn run(
     let mut hello_at = Instant::now() - Duration::from_secs(1);
     let mut heartbeat_at = Instant::now();
     let mut sync_at = Instant::now();
+    let mut last_open_error = None;
     loop {
         let now = Instant::now();
         if session != 0 && (port.is_none() || matches!(state, LinkState::Error(_))) {
@@ -122,7 +123,7 @@ fn run(
             if port.is_none() {
                 fail(&event_tx, &mut state, "USB CDC disconnected");
             }
-            send_stop(port.as_mut(), session, epoch);
+            send_stop(&mut port, &path, session, epoch);
             pending.clear();
             capturing = false;
             start_pending = false;
@@ -133,7 +134,7 @@ fn run(
         if start_pending && start_deadline.is_some_and(|deadline| now >= deadline) {
             gate.store(false, Ordering::Release);
             fail(&event_tx, &mut state, "activation timeout");
-            send_stop(port.as_mut(), session, epoch);
+            send_stop(&mut port, &path, session, epoch);
             pending.clear();
             capturing = false;
             start_pending = false;
@@ -149,7 +150,7 @@ fn run(
         let capture_requested = gate.load(Ordering::Acquire);
         if (capturing || start_pending) && (!capture_requested || lease_expired) {
             gate.store(false, Ordering::Release);
-            send_stop(port.as_mut(), session, epoch);
+            send_stop(&mut port, &path, session, epoch);
             pending.clear();
             capturing = false;
             start_pending = false;
@@ -172,12 +173,18 @@ fn run(
             {
                 Ok(new_port) => {
                     port = Some(new_port);
+                    last_open_error = None;
                     decoder = CdcDecoder::default();
                     state = LinkState::Searching;
                     let _ = event_tx.send(LinkEvent::State(state.clone()));
                     hello_at = Instant::now() - Duration::from_secs(1);
                 }
-                Err(_) => {
+                Err(error) => {
+                    let detail = error.to_string();
+                    if last_open_error.as_deref() != Some(detail.as_str()) {
+                        report_serial_failure(&path, "open", &error);
+                        last_open_error = Some(detail);
+                    }
                     if state != LinkState::Connecting {
                         state = LinkState::Connecting;
                         let _ = event_tx.send(LinkEvent::State(state.clone()));
@@ -188,12 +195,13 @@ fn run(
         while let Ok(command) = command_rx.try_recv() {
             match command {
                 LinkCommand::Shutdown => {
-                    send_stop(port.as_mut(), session, epoch);
+                    send_stop(&mut port, &path, session, epoch);
+                    close_port(&mut port, &path);
                     return;
                 }
                 LinkCommand::Stop => {
                     gate.store(false, Ordering::Release);
-                    send_stop(port.as_mut(), session, epoch);
+                    send_stop(&mut port, &path, session, epoch);
                     pending.clear();
                     capturing = false;
                     start_pending = false;
@@ -211,16 +219,12 @@ fn run(
                 }
                 LinkCommand::SetDebug(enabled) => {
                     debug = enabled;
-                    if let Some(p) = port.as_mut() {
-                        if send(
-                            p,
-                            Packet::new(MessageType::Debug, session, epoch, 0, vec![enabled as u8]),
-                        )
-                        .is_err()
-                        {
-                            port = None;
-                        }
-                    }
+                    send_or_drop(
+                        &mut port,
+                        &path,
+                        "write DEBUG",
+                        Packet::new(MessageType::Debug, session, epoch, 0, vec![enabled as u8]),
+                    );
                 }
                 LinkCommand::Begin => {
                     if matches!(state, LinkState::Connected)
@@ -244,7 +248,7 @@ fn run(
                 } if capturing && gate.load(Ordering::Acquire) => {
                     if pending.len() >= 32 || next_sequence == u32::MAX {
                         fail(&event_tx, &mut state, "transition queue overflow");
-                        send_stop(port.as_mut(), session, epoch);
+                        send_stop(&mut port, &path, session, epoch);
                         pending.clear();
                         capturing = false;
                     } else {
@@ -262,35 +266,44 @@ fn run(
                 _ => {}
             }
         }
-        if let Some(p) = port.as_mut() {
+        if port.is_some() {
             // STATUS freshness is required during capture too. A forwards these
             // app-origin probes to B; HEARTBEAT only renews the capture lease.
             if now.duration_since(hello_at) >= Duration::from_millis(250) {
                 // Reapply settings before probing: either bridge may have rebooted
                 // since the last connection, resetting its debug flag.
-                if send(p, Packet::new(MessageType::Debug, session, epoch, 0, vec![debug as u8])).is_err()
-                    || send(p, Packet::new(MessageType::Hello, 0, 0, 0, vec![])).is_err() {
-                    port = None;
+                if !send_or_drop(
+                    &mut port,
+                    &path,
+                    "write DEBUG",
+                    Packet::new(MessageType::Debug, session, epoch, 0, vec![debug as u8]),
+                ) || !send_or_drop(
+                    &mut port,
+                    &path,
+                    "write HELLO",
+                    Packet::new(MessageType::Hello, 0, 0, 0, vec![]),
+                ) {
                     continue;
                 }
                 hello_at = now;
             }
             if capturing && now.duration_since(heartbeat_at) >= Duration::from_millis(50) {
-                if send(
-                    p,
+                if !send_or_drop(
+                    &mut port,
+                    &path,
+                    "write HEARTBEAT",
                     Packet::new(MessageType::Heartbeat, session, epoch, 0, vec![]),
-                )
-                .is_err()
-                {
-                    port = None;
+                ) {
                     continue;
                 }
                 heartbeat_at = now;
             }
             if debug && capturing && now.duration_since(sync_at) >= Duration::from_secs(1) {
                 let t0 = anchor.elapsed().as_micros() as u64;
-                if send(
-                    p,
+                if !send_or_drop(
+                    &mut port,
+                    &path,
+                    "write SYNC",
                     Packet::new(
                         MessageType::Sync,
                         session,
@@ -298,10 +311,7 @@ fn run(
                         0,
                         t0.to_le_bytes().to_vec(),
                     ),
-                )
-                .is_err()
-                {
-                    port = None;
+                ) {
                     continue;
                 }
                 sync_at = now;
@@ -310,13 +320,12 @@ fn run(
                 && (start_sent.is_none()
                     || now.duration_since(start_sent.unwrap()) >= Duration::from_millis(10))
             {
-                if send(
-                    p,
+                if !send_or_drop(
+                    &mut port,
+                    &path,
+                    "write START",
                     Packet::new(MessageType::Start, session, epoch, 0, vec![]),
-                )
-                .is_err()
-                {
-                    port = None;
+                ) {
                     continue;
                 }
                 start_sent = Some(now);
@@ -324,7 +333,7 @@ fn run(
             if let Some(oldest) = pending.front_mut() {
                 if oldest.expired(now) {
                     fail(&event_tx, &mut state, "transition timeout");
-                    send_stop(Some(p), session, epoch);
+                    send_stop(&mut port, &path, session, epoch);
                     pending.clear();
                     capturing = false;
                     continue;
@@ -332,15 +341,20 @@ fn run(
                 if oldest.last_sent.is_none()
                     || now.duration_since(oldest.last_sent.unwrap()) >= Duration::from_millis(10)
                 {
-                    if send(p, oldest.packet(session, epoch)).is_err() {
-                        port = None;
+                    if !send_or_drop(
+                        &mut port,
+                        &path,
+                        "write STATE",
+                        oldest.packet(session, epoch),
+                    ) {
                         continue;
                     }
                     oldest.last_sent = Some(now);
                 }
             }
             let mut buf = [0u8; 256];
-            match p.read(&mut buf) {
+            let read_result = port.as_mut().unwrap().read(&mut buf);
+            match read_result {
                 Ok(count) => {
                     for &byte in &buf[..count] {
                         if let Some(Ok(packet)) = decoder.push(byte) {
@@ -362,8 +376,9 @@ fn run(
                 Err(error)
                     if error.kind() == std::io::ErrorKind::TimedOut
                         || error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(_) => {
-                    port = None;
+                Err(error) => {
+                    report_serial_failure(&path, "read", &error);
+                    close_port(&mut port, &path);
                 }
             }
         }
@@ -489,16 +504,49 @@ fn handle_packet(
 fn send(port: &mut Box<dyn serialport::SerialPort>, packet: Packet) -> std::io::Result<()> {
     port.write_all(&packet.encode_cdc().map_err(std::io::Error::other)?)
 }
-fn send_stop(port: Option<&mut Box<dyn serialport::SerialPort>>, session: u64, epoch: u64) {
+fn send_or_drop(
+    port: &mut Option<Box<dyn serialport::SerialPort>>,
+    path: &str,
+    operation: &str,
+    packet: Packet,
+) -> bool {
+    let result = match port.as_mut() {
+        Some(port) => send(port, packet),
+        None => return false,
+    };
+    if let Err(error) = result {
+        report_serial_failure(path, operation, &error);
+        close_port(port, path);
+        false
+    } else {
+        true
+    }
+}
+fn send_stop(
+    port: &mut Option<Box<dyn serialport::SerialPort>>,
+    path: &str,
+    session: u64,
+    epoch: u64,
+) {
     if session == 0 {
         return;
     }
-    if let Some(port) = port {
-        let _ = send(
-            port,
-            Packet::new(MessageType::Stop, session, epoch, 0, vec![]),
-        );
+    let _ = send_or_drop(
+        port,
+        path,
+        "write STOP",
+        Packet::new(MessageType::Stop, session, epoch, 0, vec![]),
+    );
+}
+fn close_port(port: &mut Option<Box<dyn serialport::SerialPort>>, path: &str) {
+    if let Some(port) = port.take()
+        && let Err(error) = port.clear(serialport::ClearBuffer::All)
+    {
+        report_serial_failure(path, "clear before close", &error);
     }
+}
+fn report_serial_failure(path: &str, operation: &str, error: &dyn std::fmt::Display) {
+    eprintln!("serial {operation} on {path} failed: {error}");
 }
 fn fail(tx: &Sender<LinkEvent>, state: &mut LinkState, detail: &str) {
     *state = LinkState::Error(detail.into());
@@ -648,10 +696,18 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
-    fn active_serial_disconnect_revokes_gate_and_reports_error() {
+    fn active_serial_disconnect_revokes_gate_reports_error_and_reopens() {
         use serialport::SerialPort;
+        use std::os::unix::fs::symlink;
+
         let (mut remote, local) = serialport::TTYPort::pair().unwrap();
-        let path = local.name().unwrap();
+        let link = std::env::temp_dir().join(format!(
+            "keyboard-bridge-link-{}-{}",
+            std::process::id(),
+            fresh_session()
+        ));
+        symlink(local.name().unwrap(), &link).unwrap();
+        let path = link.to_string_lossy().into_owned();
         drop(local);
         remote.set_timeout(Duration::from_millis(100)).unwrap();
         let (commands, command_rx) = mpsc::channel();
@@ -727,8 +783,43 @@ mod tests {
             }
         }
         let revoked = !gate.load(Ordering::Acquire);
+        let (mut recovered_remote, recovered_local) = serialport::TTYPort::pair().unwrap();
+        recovered_remote
+            .set_timeout(Duration::from_millis(10))
+            .unwrap();
+        std::fs::remove_file(&link).unwrap();
+        symlink(recovered_local.name().unwrap(), &link).unwrap();
+        drop(recovered_local);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut decoder = CdcDecoder::default();
+        let mut reconnected = false;
+        while Instant::now() < deadline && !reconnected {
+            let mut buf = [0; 256];
+            if let Ok(count) = recovered_remote.read(&mut buf) {
+                for &byte in &buf[..count] {
+                    if let Some(Ok(packet)) = decoder.push(byte)
+                        && packet.kind == MessageType::Hello
+                    {
+                        let mut payload = vec![0; 16];
+                        payload[0] = 1;
+                        recovered_remote
+                            .write_all(
+                                &Packet::new(MessageType::Status, 0, 5, 0, payload)
+                                    .encode_cdc()
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                    }
+                }
+            }
+            reconnected |= event_rx
+                .try_iter()
+                .any(|event| matches!(event, LinkEvent::State(LinkState::Connected)));
+        }
         commands.send(LinkCommand::Shutdown).unwrap();
         worker.join().unwrap();
+        std::fs::remove_file(link).unwrap();
         assert!(authorized, "fake CDC peer did not reach capture readiness");
         assert!(
             disconnected,
@@ -737,6 +828,10 @@ mod tests {
         assert!(
             revoked,
             "serial failure must synchronously revoke input authorization"
+        );
+        assert!(
+            reconnected,
+            "worker did not reopen the replacement CDC endpoint"
         );
     }
 

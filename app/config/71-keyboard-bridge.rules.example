@@ -1,0 +1,6 @@
+# Example only. Replace every placeholder before installing this file.
+# Grant the active local desktop user access before 73-seat-late.rules.
+
+ACTION!="remove", SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="BRIDGE_VENDOR_ID", ENV{ID_MODEL_ID}=="BRIDGE_MODEL_ID", ENV{ID_SERIAL_SHORT}=="UNIQUE_BRIDGE_SERIAL", ENV{ID_USB_INTERFACE_NUM}=="00", TAG+="uaccess"
+
+ACTION!="remove", SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_VENDOR_ID}=="KEYBOARD_VENDOR_ID", ENV{ID_MODEL_ID}=="KEYBOARD_MODEL_ID", ENV{ID_SERIAL}=="UNIQUE_KEYBOARD_SERIAL", ENV{ID_USB_INTERFACE_NUM}=="00", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"

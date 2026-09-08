@@ -15,14 +15,15 @@ The firmware configuration targets ESP32-S3 N16R8 hardware.
 ## Linux application
 
 - Linux desktop with Wayland or X11.
-- CachyOS / KDE Wayland is the primary source-platform configuration.
-- Rust 1.98.1 / Cargo 1.98.1.
-- libxkbcommon 1.13.2.
-- Wayland client 1.26.0.
-- fontconfig 2.18.3.
-- libudev 261.
+- Rust and Cargo.
+- libxkbcommon development files.
 - A working OpenGL-capable graphics driver for the egui renderer.
 - Access to the selected `/dev/input` keyboard device and bridge A's serial device as the normal desktop user.
+
+The current reference environment has been verified with CachyOS / KDE Wayland,
+Rust 1.98.1 / Cargo 1.98.1, libxkbcommon 1.13.2, Wayland client 1.26.0,
+fontconfig 2.18.3, and libudev 261. These are tested versions rather than claims
+that every listed version is a minimum compatibility requirement.
 
 Cargo.lock defines the application's resolved Rust packages. Internet access is required when fetching build dependencies; ordinary application use has no runtime account or network-service dependency.
 

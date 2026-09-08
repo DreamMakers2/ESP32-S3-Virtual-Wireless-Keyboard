@@ -4,7 +4,7 @@ Keep changes focused, easy to review, and aligned with the bridge's core behavio
 Preserve focus-bound capture, ordered key transitions, and release-on-failure
 semantics. Avoid unrelated infrastructure changes.
 
-For protocol changes, update `docs/PROTOCOL.md` and both C/Rust implementations and
+For protocol changes, update `PROTOCOL.md` and both C/Rust implementations and
 fixtures together. Run the relevant app tests and both firmware builds. Changes to
 capture, USB, or radio behavior should include the corresponding hardware checks.
 
