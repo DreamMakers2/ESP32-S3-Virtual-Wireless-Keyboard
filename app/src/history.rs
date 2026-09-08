@@ -239,6 +239,13 @@ impl XkbHistory {
         history.press(linux_key, &text, self.shortcut_modifiers(key, modifiers));
         self.state.update_key(key, xkb::KeyDirection::Down);
     }
+    /// Linux repeat events are history-only. The key is already down in XKB,
+    /// so updating it again would risk changing modifier or lock state.
+    pub fn repeat(&mut self, history: &mut History, linux_key: u16, modifiers: u8) {
+        let key = xkb::Keycode::new(u32::from(linux_key) + 8);
+        let text = self.state.key_get_utf8(key);
+        history.press(linux_key, &text, self.shortcut_modifiers(key, modifiers));
+    }
     /// A right Alt which XKB consumes as Level3 (AltGr) is text input, not an
     /// Alt shortcut. The raw HID modifier still reaches the target unchanged.
     fn shortcut_modifiers(&self, key: xkb::Keycode, modifiers: u8) -> u8 {
@@ -366,6 +373,27 @@ mod tests {
         xkb.release(&mut h, 18);
         xkb.release(&mut h, 100);
         assert_eq!(h.rendered(), "é");
+    }
+    #[test]
+    fn xkb_repeats_edit_history_without_repressing_xkb_state() {
+        let mut h = History::default();
+        let mut xkb = XkbHistory::with_layout("us").unwrap();
+        xkb.press(&mut h, 30, 0);
+        xkb.repeat(&mut h, 30, 0);
+        xkb.repeat(&mut h, 30, 0);
+        xkb.release(&mut h, 30);
+        xkb.press(&mut h, 14, 0);
+        xkb.repeat(&mut h, 14, 0);
+        xkb.release(&mut h, 14);
+        assert_eq!(h.rendered(), "a");
+
+        h.press(0, "bc", 0);
+        xkb.press(&mut h, 105, 0);
+        xkb.repeat(&mut h, 105, 0);
+        xkb.release(&mut h, 105);
+        xkb.press(&mut h, 30, 0);
+        xkb.release(&mut h, 30);
+        assert_eq!(h.rendered(), "aabc");
     }
     #[test]
     fn arrows_move_the_logical_caret() {

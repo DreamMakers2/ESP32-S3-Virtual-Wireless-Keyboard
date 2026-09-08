@@ -27,6 +27,7 @@ pub enum InputEvent {
         generation: u64,
         code: u16,
         pressed: bool,
+        repeat: bool,
         received_us: u64,
     },
     Fault {
@@ -142,7 +143,8 @@ pub fn spawn(
                                     let _ = event_tx.send(InputEvent::Key {
                                         generation,
                                         code,
-                                        pressed: value == 1,
+                                        pressed: value != 0,
+                                        repeat: value == 2,
                                         received_us: anchor.elapsed().as_micros() as u64,
                                     });
                                 }
@@ -181,7 +183,7 @@ fn should_forward(preheld: &mut HashSet<u16>, code: u16, value: i32, gate: &Atom
         }
         return false;
     }
-    (value == 0 || value == 1) && forwarding_allowed(gate)
+    (value == 0 || value == 1 || value == 2) && forwarding_allowed(gate)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -245,8 +247,10 @@ mod tests {
         assert!(preheld.contains(&30));
         assert!(!should_forward(&mut preheld, 30, 0, &gate));
         assert!(should_forward(&mut preheld, 30, 1, &gate));
+        assert!(should_forward(&mut preheld, 30, 2, &gate));
         // A focus-loss store happens before the event-drain gate check.
         gate.store(false, Ordering::Release);
         assert!(!should_forward(&mut preheld, 31, 1, &gate));
+        assert!(!should_forward(&mut preheld, 31, 2, &gate));
     }
 }

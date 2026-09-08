@@ -73,6 +73,8 @@ translated control characters. Modifier taps appear on release with side-specifi
 names such as `[RCtrl]` and `[RAlt]`; modifiers used with another key do not also
 produce standalone tokens. Shift and AltGr keep producing normal printable text.
 Unmodified Enter, deletion, and caret navigation retain their live history behavior.
+Held keys repeat in the local history using the source keyboard's repeat events;
+the target continues to control its own repeat timing.
 
 Preferences live in `${XDG_CONFIG_HOME:-$HOME/.config}/keyboard-bridge/config.toml`.
 Debug is off by default. It enables timing exchanges and shows current timings,

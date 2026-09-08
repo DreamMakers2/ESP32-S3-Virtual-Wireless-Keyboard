@@ -222,8 +222,14 @@ impl BridgeApp {
         self.suspend_input();
         let _ = self.link_tx.send(LinkCommand::Stop);
     }
-    fn accept_key(&mut self, code: u16, pressed: bool, received_us: u64) {
+    fn accept_key(&mut self, code: u16, pressed: bool, repeat: bool, received_us: u64) {
         if !self.capture_gate.load(Ordering::Acquire) {
+            return;
+        }
+        if repeat {
+            if let Some(xkb) = self.xkb.as_mut() {
+                xkb.repeat(&mut self.history, code, self.hid.modifiers);
+            }
             return;
         }
         if pressed {
@@ -250,9 +256,10 @@ impl BridgeApp {
                     generation,
                     code,
                     pressed,
+                    repeat,
                     received_us,
                 } if self.active && generation == self.input_generation => {
-                    self.accept_key(code, pressed, received_us)
+                    self.accept_key(code, pressed, repeat, received_us)
                 }
                 InputEvent::Fault { generation, detail } if generation == self.input_generation => {
                     self.error = Some(format!("Error: {detail}"));
@@ -862,5 +869,68 @@ mod lifecycle_tests {
             link_commands.try_recv(),
             Ok(LinkCommand::Begin { generation: 3 })
         ));
+    }
+
+    #[test]
+    fn repeat_edits_history_without_sending_another_hid_state() {
+        let xkb = XkbHistory::new().expect("test environment has an XKB keymap");
+        let settings = Settings::default();
+        let (input_tx, _input_commands) = mpsc::channel();
+        let (_input_events, input_rx) = mpsc::channel();
+        let (link_tx, link_commands) = mpsc::channel();
+        let (_link_events, link_rx) = mpsc::channel();
+        let capture_gate = Arc::new(AtomicBool::new(true));
+        let mut app = BridgeApp {
+            settings,
+            input_tx,
+            input_rx,
+            link_tx,
+            link_rx,
+            capture_gate,
+            lease_ms: Arc::new(AtomicU64::new(0)),
+            history: History::default(),
+            xkb: Some(xkb),
+            hid: HidState::default(),
+            link_state: LinkState::Capturing,
+            activation_intent: true,
+            active: true,
+            input_generation: 7,
+            capture_session: Some(1),
+            had_focus: true,
+            error: None,
+            started: Instant::now(),
+            app_start_ms: 0,
+            usb_ms: None,
+            a_boot_us: None,
+            b_boot_us: None,
+            radio_us: None,
+            lock_leds: 0,
+            latencies: VecDeque::with_capacity(20),
+            clock_offset_us: None,
+            best_sync_rtt_us: u64::MAX,
+            screenshot_path: None,
+            screenshot_requested: false,
+            screenshot_scale: None,
+            history_revision: 0,
+        };
+
+        app.accept_key(42, true, false, 10);
+        assert!(matches!(
+            link_commands.try_recv(),
+            Ok(LinkCommand::State { modifiers: 0x02, press: true, .. })
+        ));
+        let hid_before_repeat = app.hid.clone();
+        app.accept_key(42, true, true, 11);
+        assert_eq!(app.hid, hid_before_repeat);
+        assert!(link_commands.try_recv().is_err());
+
+        app.accept_key(30, true, false, 12);
+        let _ = link_commands.try_recv().unwrap();
+        app.accept_key(30, true, true, 13);
+        assert_eq!(app.history.rendered(), "AA");
+        assert!(link_commands.try_recv().is_err());
+        app.accept_key(30, false, false, 14);
+        app.accept_key(42, false, false, 15);
+        assert_eq!(app.hid, HidState::default());
     }
 }
