@@ -40,9 +40,17 @@ install packages or use a project-specific configuration directory.
 
 Click the rounded surface or choose **Activate** in its right-click menu to start
 capture once the whole connection is ready. Clicking away, closing the window,
-losing the keyboard, or a communication failure stops forwarding and releases the
-local grab. Choose **Pause** from the menu to pause while retaining focus.
-Reconnection does not activate capture automatically.
+losing the keyboard, or an unrecoverable communication failure stops forwarding
+and releases the local grab. Choose **Pause** from the menu to pause while
+retaining focus.
+
+After activation, temporary target USB disconnects show **Target USB unavailable -
+waiting for reconnect**. The app releases capture and discards pending input,
+then starts a fresh session automatically when the target is ready. Keys pressed
+during the outage are not queued; keys still held at reconnection must be released
+and pressed again. **Pause** remains available while waiting. Pause, focus loss,
+keyboard failure, or a lost app-to-A connection cancels activation, so recovery
+from those conditions still requires **Activate**.
 
 Serial failures are written to stderr with the operation, configured device path,
 and original error. Failed connections discard queued serial data before closing

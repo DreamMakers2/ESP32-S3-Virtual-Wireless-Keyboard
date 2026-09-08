@@ -13,8 +13,11 @@ use std::{
 
 #[derive(Clone, Debug)]
 pub enum LinkCommand {
-    Begin,
+    Begin {
+        generation: u64,
+    },
     State {
+        generation: u64,
         modifiers: u8,
         bitmap: [u8; 32],
         press: bool,
@@ -28,6 +31,7 @@ pub enum LinkCommand {
 pub enum LinkState {
     Connecting,
     Searching,
+    TargetUsbUnavailable,
     Connected,
     Capturing,
     Error(String),
@@ -35,8 +39,13 @@ pub enum LinkState {
 #[derive(Clone, Debug)]
 pub enum LinkEvent {
     State(LinkState),
-    CaptureAuthorized,
+    CaptureAuthorized {
+        session: u64,
+        generation: u64,
+    },
     Ack {
+        session: u64,
+        generation: u64,
         sequence: u32,
         press: bool,
         captured_us: u64,
@@ -54,7 +63,44 @@ pub enum LinkEvent {
     },
 }
 
+const RECOVERY_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+fn enter_target_recovery(
+    state: &mut LinkState,
+    tx: &Sender<LinkEvent>,
+    gate: &AtomicBool,
+    capturing: &mut bool,
+    start_pending: &mut bool,
+    start_sent: &mut Option<Instant>,
+    start_deadline: &mut Option<Instant>,
+    pending: &mut VecDeque<Pending>,
+    recovery_deadline: &mut Option<Instant>,
+    recovery_pending: &mut bool,
+    hello_at: &mut Instant,
+    now: Instant,
+) {
+    gate.store(false, Ordering::Release);
+    *capturing = false;
+    *start_pending = false;
+    *start_sent = None;
+    *start_deadline = None;
+    pending.clear();
+    *recovery_pending = true;
+    if recovery_deadline.is_none() {
+        *recovery_deadline = Some(now + RECOVERY_PROBE_TIMEOUT);
+        *state = LinkState::TargetUsbUnavailable;
+        let _ = tx.send(LinkEvent::State(state.clone()));
+    }
+    *hello_at = now - Duration::from_millis(250);
+}
+
+fn fail_recovery(state: &mut LinkState, tx: &Sender<LinkEvent>, gate: &AtomicBool, detail: &str) {
+    gate.store(false, Ordering::Release);
+    fail(tx, state, detail);
+}
+
 struct Pending {
+    generation: u64,
     sequence: u32,
     payload: Vec<u8>,
     press: bool,
@@ -107,11 +153,16 @@ fn run(
     let mut session = 0u64;
     let mut epoch = 0u64;
     let mut next_sequence = 1u32;
+    let mut start_generation = 0u64;
+    let mut capture_generation = 0u64;
     let mut pending: VecDeque<Pending> = VecDeque::new();
     let mut capturing = false;
     let mut start_pending = false;
     let mut start_sent: Option<Instant> = None;
     let mut start_deadline: Option<Instant> = None;
+    let mut recovery_deadline: Option<Instant> = None;
+    let mut recovery_pending = false;
+    let mut start_is_recovery = false;
     let mut hello_at = Instant::now() - Duration::from_secs(1);
     let mut heartbeat_at = Instant::now();
     let mut sync_at = Instant::now();
@@ -127,22 +178,57 @@ fn run(
             pending.clear();
             capturing = false;
             start_pending = false;
+            start_sent = None;
+            start_deadline = None;
+            recovery_deadline = None;
+            recovery_pending = false;
+            start_is_recovery = false;
             session = 0;
             epoch = 0;
             decoder = CdcDecoder::default();
         }
-        if start_pending && start_deadline.is_some_and(|deadline| now >= deadline) {
-            gate.store(false, Ordering::Release);
-            fail(&event_tx, &mut state, "activation timeout");
+        if recovery_deadline.is_some_and(|deadline| now >= deadline) {
+            recovery_deadline = None;
+            fail_recovery(&mut state, &event_tx, &gate, "target USB recovery timeout");
             send_stop(&mut port, &path, session, epoch);
             pending.clear();
-            capturing = false;
-            start_pending = false;
-            start_sent = None;
-            start_deadline = None;
             session = 0;
             epoch = 0;
             continue;
+        }
+        if start_pending && start_deadline.is_some_and(|deadline| now >= deadline) {
+            if start_is_recovery {
+                fail_recovery(
+                    &mut state,
+                    &event_tx,
+                    &gate,
+                    "target USB recovery handshake timeout",
+                );
+                send_stop(&mut port, &path, session, epoch);
+                pending.clear();
+                start_pending = false;
+                start_sent = None;
+                start_deadline = None;
+                recovery_pending = false;
+                start_is_recovery = false;
+                session = 0;
+                epoch = 0;
+                continue;
+            }
+            enter_target_recovery(
+                &mut state,
+                &event_tx,
+                &gate,
+                &mut capturing,
+                &mut start_pending,
+                &mut start_sent,
+                &mut start_deadline,
+                &mut pending,
+                &mut recovery_deadline,
+                &mut recovery_pending,
+                &mut hello_at,
+                now,
+            );
         }
         let lease_expired = (anchor.elapsed().as_millis() as u64)
             .saturating_sub(lease_ms.load(Ordering::Acquire))
@@ -156,6 +242,9 @@ fn run(
             start_pending = false;
             start_sent = None;
             start_deadline = None;
+            recovery_deadline = None;
+            recovery_pending = false;
+            start_is_recovery = false;
             session = 0;
             epoch = 0;
             if capture_requested && lease_expired {
@@ -207,6 +296,9 @@ fn run(
                     start_pending = false;
                     start_sent = None;
                     start_deadline = None;
+                    recovery_deadline = None;
+                    recovery_pending = false;
+                    start_is_recovery = false;
                     session = 0;
                     epoch = 0;
                     state = if port.is_some() {
@@ -226,26 +318,33 @@ fn run(
                         Packet::new(MessageType::Debug, session, epoch, 0, vec![enabled as u8]),
                     );
                 }
-                LinkCommand::Begin => {
+                LinkCommand::Begin { generation } => {
                     if matches!(state, LinkState::Connected)
                         && !capturing
                         && !start_pending
                         && gate.load(Ordering::Acquire)
                     {
                         session = fresh_session();
+                        start_generation = generation;
                         pending.clear();
                         next_sequence = 1;
                         start_pending = true;
                         start_sent = None;
                         start_deadline = Some(now + Duration::from_millis(250));
+                        start_is_recovery = recovery_pending;
+                        recovery_deadline = None;
                     }
                 }
                 LinkCommand::State {
+                    generation,
                     modifiers,
                     bitmap,
                     press,
                     captured_us,
-                } if capturing && gate.load(Ordering::Acquire) => {
+                } if capturing
+                    && generation == capture_generation
+                    && gate.load(Ordering::Acquire) =>
+                {
                     if pending.len() >= 32 || next_sequence == u32::MAX {
                         fail(&event_tx, &mut state, "transition queue overflow");
                         send_stop(&mut port, &path, session, epoch);
@@ -253,6 +352,7 @@ fn run(
                         capturing = false;
                     } else {
                         pending.push_back(Pending {
+                            generation,
                             sequence: next_sequence,
                             payload: state_payload(modifiers, bitmap),
                             press,
@@ -332,10 +432,20 @@ fn run(
             }
             if let Some(oldest) = pending.front_mut() {
                 if oldest.expired(now) {
-                    fail(&event_tx, &mut state, "transition timeout");
-                    send_stop(&mut port, &path, session, epoch);
-                    pending.clear();
-                    capturing = false;
+                    enter_target_recovery(
+                        &mut state,
+                        &event_tx,
+                        &gate,
+                        &mut capturing,
+                        &mut start_pending,
+                        &mut start_sent,
+                        &mut start_deadline,
+                        &mut pending,
+                        &mut recovery_deadline,
+                        &mut recovery_pending,
+                        &mut hello_at,
+                        now,
+                    );
                     continue;
                 }
                 if oldest.last_sent.is_none()
@@ -365,10 +475,19 @@ fn run(
                                 &mut epoch,
                                 &mut capturing,
                                 &mut start_pending,
+                                &mut start_sent,
+                                &mut start_deadline,
                                 &mut pending,
+                                &mut recovery_deadline,
+                                &mut recovery_pending,
+                                &mut hello_at,
                                 session,
+                                start_generation,
+                                &mut capture_generation,
+                                &mut start_is_recovery,
                                 debug,
                                 anchor,
+                                &gate,
                             );
                         }
                     }
@@ -393,27 +512,79 @@ fn handle_packet(
     epoch: &mut u64,
     capturing: &mut bool,
     start_pending: &mut bool,
+    start_sent: &mut Option<Instant>,
+    start_deadline: &mut Option<Instant>,
     pending: &mut VecDeque<Pending>,
+    recovery_deadline: &mut Option<Instant>,
+    recovery_pending: &mut bool,
+    hello_at: &mut Instant,
     session: u64,
+    start_generation: u64,
+    capture_generation: &mut u64,
+    start_is_recovery: &mut bool,
     debug: bool,
     anchor: Instant,
+    gate: &AtomicBool,
 ) {
     match packet.kind {
         MessageType::Status if packet.payload.len() == 16 => {
-            if *capturing && packet.epoch != *epoch {
-                fail(tx, state, "bridge session changed");
-                *capturing = false;
-                pending.clear();
-                return;
-            }
-            *epoch = packet.epoch;
             let ready = packet.payload[0] != 0;
-            if (*capturing || *start_pending) && (!ready || packet.payload[2..4] != [0, 0]) {
-                fail(tx, state, "bridge is no longer ready");
+            let error = u16::from_le_bytes(packet.payload[2..4].try_into().unwrap());
+            let changed_epoch = packet.epoch != *epoch;
+            let was_capturing = *capturing || *start_pending;
+            if error != 0 {
+                fail_recovery(state, tx, gate, &format!("bridge status error {error}"));
                 *capturing = false;
                 *start_pending = false;
                 pending.clear();
+                *recovery_deadline = None;
                 return;
+            }
+            if was_capturing && (!ready || changed_epoch) {
+                enter_target_recovery(
+                    state,
+                    tx,
+                    gate,
+                    capturing,
+                    start_pending,
+                    start_sent,
+                    start_deadline,
+                    pending,
+                    recovery_deadline,
+                    recovery_pending,
+                    hello_at,
+                    Instant::now(),
+                );
+                *epoch = packet.epoch;
+                // A clean not-ready status proves the target USB is unavailable,
+                // so it can wait for the normal status stream. A changed epoch
+                // does the same for a fast target reconnect.
+                *recovery_deadline = None;
+                if ready {
+                    *state = LinkState::Connected;
+                    let _ = tx.send(LinkEvent::State(state.clone()));
+                }
+            } else if recovery_deadline.is_some() {
+                if changed_epoch {
+                    *epoch = packet.epoch;
+                    // The probe has now observed a new bridge session. A
+                    // not-ready status may legitimately become ready at this
+                    // same epoch after USB enumeration finishes.
+                    *recovery_deadline = None;
+                    if ready {
+                        *state = LinkState::Connected;
+                        let _ = tx.send(LinkEvent::State(state.clone()));
+                    }
+                }
+            } else {
+                *epoch = packet.epoch;
+                if was_capturing && !ready {
+                    fail_recovery(state, tx, gate, "bridge is no longer ready");
+                    *capturing = false;
+                    *start_pending = false;
+                    pending.clear();
+                    return;
+                }
             }
             let _ = tx.send(LinkEvent::Leds(packet.payload[1]));
             let a_boot_us = u32::from_le_bytes(packet.payload[4..8].try_into().unwrap());
@@ -424,10 +595,14 @@ fn handle_packet(
                 b_boot_us,
                 radio_ready_us,
             });
-            if ready && !*capturing {
+            if ready && !*capturing && recovery_deadline.is_none() {
                 *state = LinkState::Connected;
                 let _ = tx.send(LinkEvent::State(state.clone()));
-            } else if !ready && !*capturing {
+            } else if !ready
+                && !*capturing
+                && recovery_deadline.is_none()
+                && !matches!(state, LinkState::TargetUsbUnavailable)
+            {
                 *state = LinkState::Searching;
                 let _ = tx.send(LinkEvent::State(state.clone()));
             }
@@ -441,9 +616,15 @@ fn handle_packet(
         {
             *start_pending = false;
             *capturing = true;
+            *capture_generation = start_generation;
+            *recovery_pending = false;
+            *start_is_recovery = false;
             *state = LinkState::Capturing;
             let _ = tx.send(LinkEvent::State(state.clone()));
-            let _ = tx.send(LinkEvent::CaptureAuthorized);
+            let _ = tx.send(LinkEvent::CaptureAuthorized {
+                session,
+                generation: start_generation,
+            });
         }
         MessageType::Ack if *capturing && packet.session == session && packet.epoch == *epoch => {
             let hid_us = if packet.payload.len() == 8 {
@@ -457,6 +638,8 @@ fn handle_packet(
             {
                 let value = pending.pop_front().unwrap();
                 let _ = tx.send(LinkEvent::Ack {
+                    session,
+                    generation: value.generation,
                     sequence: value.sequence,
                     press: value.press,
                     captured_us: value.captured_us,
@@ -488,15 +671,48 @@ fn handle_packet(
         }
         MessageType::Error
             if session != 0
-                && (*capturing || *start_pending)
+                && (*capturing
+                    || *start_pending
+                    || recovery_deadline.is_some()
+                    || matches!(state, LinkState::TargetUsbUnavailable))
                 && packet.payload.len() == 2
                 && packet.session == session
                 && packet.epoch == *epoch =>
         {
             let code = u16::from_le_bytes(packet.payload[..2].try_into().unwrap());
-            fail(tx, state, &format!("bridge error {code}"));
-            *capturing = false;
-            pending.clear();
+            if code == 3 {
+                if *start_is_recovery {
+                    fail_recovery(state, tx, gate, "target USB recovery handshake failed");
+                    *capturing = false;
+                    *start_pending = false;
+                    *start_sent = None;
+                    *start_deadline = None;
+                    *recovery_deadline = None;
+                    *recovery_pending = false;
+                    *start_is_recovery = false;
+                    pending.clear();
+                } else if !matches!(state, LinkState::TargetUsbUnavailable) {
+                    enter_target_recovery(
+                        state,
+                        tx,
+                        gate,
+                        capturing,
+                        start_pending,
+                        start_sent,
+                        start_deadline,
+                        pending,
+                        recovery_deadline,
+                        recovery_pending,
+                        hello_at,
+                        Instant::now(),
+                    );
+                }
+            } else {
+                fail_recovery(state, tx, gate, &format!("bridge error {code}"));
+                *capturing = false;
+                *start_pending = false;
+                pending.clear();
+            }
         }
         _ => {}
     }
@@ -576,6 +792,7 @@ mod tests {
 
     fn pending(at: Instant, press: bool) -> Pending {
         Pending {
+            generation: 0,
             sequence: 1,
             payload: state_payload(0, [0; 32]),
             press,
@@ -583,6 +800,49 @@ mod tests {
             last_sent: None,
             queued_at: at,
         }
+    }
+
+    fn handle_test_packet(
+        packet: Packet,
+        state: &mut LinkState,
+        tx: &Sender<LinkEvent>,
+        epoch: &mut u64,
+        capturing: &mut bool,
+        starting: &mut bool,
+        pending: &mut VecDeque<Pending>,
+        session: u64,
+        debug: bool,
+        anchor: Instant,
+    ) {
+        let mut start_sent = None;
+        let mut start_deadline = None;
+        let mut recovery_deadline = None;
+        let mut recovery_pending = false;
+        let mut hello_at = Instant::now();
+        let mut capture_generation = 0;
+        let mut start_is_recovery = false;
+        let gate = AtomicBool::new(true);
+        handle_packet(
+            packet,
+            state,
+            tx,
+            epoch,
+            capturing,
+            starting,
+            &mut start_sent,
+            &mut start_deadline,
+            pending,
+            &mut recovery_deadline,
+            &mut recovery_pending,
+            &mut hello_at,
+            session,
+            1,
+            &mut capture_generation,
+            &mut start_is_recovery,
+            debug,
+            anchor,
+            &gate,
+        );
     }
 
     #[test]
@@ -622,7 +882,7 @@ mod tests {
         let mut starting = true;
         let mut queue = VecDeque::new();
         for (session, expected) in [(2, false), (3, true), (3, true)] {
-            handle_packet(
+            handle_test_packet(
                 Packet::new(MessageType::Ready, session, 4, 0, vec![]),
                 &mut state,
                 &tx,
@@ -638,7 +898,7 @@ mod tests {
         }
         assert_eq!(
             rx.try_iter()
-                .filter(|event| matches!(event, LinkEvent::CaptureAuthorized))
+                .filter(|event| matches!(event, LinkEvent::CaptureAuthorized { .. }))
                 .count(),
             1
         );
@@ -653,7 +913,7 @@ mod tests {
         let mut starting = false;
         let mut queue = VecDeque::from([pending(Instant::now(), true)]);
         for (session, remains_active) in [(2, true), (3, false)] {
-            handle_packet(
+            handle_test_packet(
                 Packet::new(MessageType::Error, session, 4, 0, vec![3, 0]),
                 &mut state,
                 &tx,
@@ -668,7 +928,7 @@ mod tests {
             assert_eq!(capturing, remains_active);
         }
         assert!(queue.is_empty());
-        assert!(matches!(state, LinkState::Error(_)));
+        assert_eq!(state, LinkState::TargetUsbUnavailable);
     }
 
     #[test]
@@ -679,7 +939,7 @@ mod tests {
         let mut capturing = false;
         let mut starting = false;
         let mut queue = VecDeque::new();
-        handle_packet(
+        handle_test_packet(
             Packet::new(MessageType::Error, 0, 4, 0, vec![3, 0]),
             &mut state,
             &tx,
@@ -693,6 +953,110 @@ mod tests {
         );
         assert_eq!(state, LinkState::Connected);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repeated_target_epoch_changes_start_fresh_captures() {
+        use serialport::SerialPort;
+
+        let (mut remote, local) = serialport::TTYPort::pair().unwrap();
+        let path = local.name().unwrap();
+        drop(local);
+        remote.set_timeout(Duration::from_millis(10)).unwrap();
+        let (commands, command_rx) = mpsc::channel();
+        let (events, event_rx) = mpsc::channel();
+        let gate = Arc::new(AtomicBool::new(false));
+        let lease = Arc::new(AtomicU64::new(0));
+        let anchor = Instant::now();
+        let worker = {
+            let gate = gate.clone();
+            let lease = lease.clone();
+            thread::spawn(move || run(path, false, command_rx, events, gate, lease, anchor))
+        };
+
+        let mut decoder = CdcDecoder::default();
+        let mut epoch = 4;
+        let mut begun = false;
+        let mut reconnect_ready = false;
+        let mut generation = 0;
+        let mut waiting = 0;
+        let mut sessions = Vec::new();
+        let mut errors = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && sessions.len() < 3 {
+            if gate.load(Ordering::Acquire) {
+                lease.store(anchor.elapsed().as_millis() as u64, Ordering::Release);
+            }
+            let mut buf = [0; 256];
+            if let Ok(count) = remote.read(&mut buf) {
+                for &byte in &buf[..count] {
+                    if let Some(Ok(packet)) = decoder.push(byte) {
+                        let reply = match packet.kind {
+                            MessageType::Hello => {
+                                let mut payload = vec![0; 16];
+                                payload[0] = 1;
+                                Some(Packet::new(MessageType::Status, 0, epoch, 0, payload))
+                            }
+                            MessageType::Start => Some(Packet::new(
+                                MessageType::Ready,
+                                packet.session,
+                                epoch,
+                                0,
+                                vec![],
+                            )),
+                            _ => None,
+                        };
+                        if let Some(reply) = reply {
+                            remote.write_all(&reply.encode_cdc().unwrap()).unwrap();
+                        }
+                    }
+                }
+            }
+            for event in event_rx.try_iter() {
+                match event {
+                    LinkEvent::State(LinkState::Connected) if !begun || reconnect_ready => {
+                        begun = true;
+                        reconnect_ready = false;
+                        generation += 1;
+                        gate.store(true, Ordering::Release);
+                        commands.send(LinkCommand::Begin { generation }).unwrap();
+                    }
+                    LinkEvent::State(LinkState::TargetUsbUnavailable) => {
+                        waiting += 1;
+                        reconnect_ready = true;
+                        gate.store(false, Ordering::Release);
+                    }
+                    LinkEvent::CaptureAuthorized {
+                        session,
+                        generation: event_generation,
+                    } => {
+                        assert_eq!(event_generation, generation);
+                        sessions.push(session);
+                        if sessions.len() < 3 {
+                            epoch += 1;
+                        }
+                    }
+                    LinkEvent::State(LinkState::Error(error)) => errors.push(error),
+                    _ => {}
+                }
+            }
+        }
+        gate.store(false, Ordering::Release);
+        commands.send(LinkCommand::Shutdown).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            sessions.len(),
+            3,
+            "each reconnect should start a fresh capture"
+        );
+        assert_eq!(
+            waiting, 2,
+            "each target epoch change should close capture once"
+        );
+        assert_ne!(sessions[0], sessions[1]);
+        assert_ne!(sessions[1], sessions[2]);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     }
     #[cfg(unix)]
     #[test]
@@ -764,9 +1128,9 @@ mod tests {
                     LinkEvent::State(LinkState::Connected) if !began => {
                         began = true;
                         gate.store(true, Ordering::Release);
-                        commands.send(LinkCommand::Begin).unwrap();
+                        commands.send(LinkCommand::Begin { generation: 1 }).unwrap();
                     }
-                    LinkEvent::CaptureAuthorized => authorized = true,
+                    LinkEvent::CaptureAuthorized { .. } => authorized = true,
                     _ => {}
                 }
             }
@@ -902,20 +1266,20 @@ mod tests {
                 match (phase, event) {
                     (0, LinkEvent::State(LinkState::Connected)) => {
                         gate.store(true, Ordering::Release);
-                        commands.send(LinkCommand::Begin).unwrap();
+                        commands.send(LinkCommand::Begin { generation: 1 }).unwrap();
                         phase = 1;
                     }
-                    (1, LinkEvent::CaptureAuthorized) => {
+                    (1, LinkEvent::CaptureAuthorized { .. }) => {
                         gate.store(false, Ordering::Release);
                         commands.send(LinkCommand::Stop).unwrap();
                         phase = 2;
                     }
                     (2, LinkEvent::State(LinkState::Connected)) => {
                         gate.store(true, Ordering::Release);
-                        commands.send(LinkCommand::Begin).unwrap();
+                        commands.send(LinkCommand::Begin { generation: 2 }).unwrap();
                         phase = 4;
                     }
-                    (4, LinkEvent::CaptureAuthorized) => phase = 3,
+                    (4, LinkEvent::CaptureAuthorized { .. }) => phase = 3,
                     _ => {}
                 }
             }
@@ -943,10 +1307,22 @@ mod tests {
             let mut payload = vec![0; 16];
             payload[0] = 1;
             payload[1] = leds;
-            handle_packet(Packet::new(MessageType::Status, 0, 4, 0, payload),
-                &mut state, &tx, &mut epoch, &mut capturing, &mut start_pending,
-                &mut pending, 0, false, Instant::now());
-            assert!(rx.try_iter().any(|event| matches!(event, LinkEvent::Leds(value) if value == leds)));
+            handle_test_packet(
+                Packet::new(MessageType::Status, 0, 4, 0, payload),
+                &mut state,
+                &tx,
+                &mut epoch,
+                &mut capturing,
+                &mut start_pending,
+                &mut pending,
+                0,
+                false,
+                Instant::now(),
+            );
+            assert!(
+                rx.try_iter()
+                    .any(|event| matches!(event, LinkEvent::Leds(value) if value == leds))
+            );
         }
     }
 
@@ -995,22 +1371,37 @@ mod tests {
                                 if debug_enabled {
                                     // A peer restart can clear the setting after it
                                     // was successfully synchronized once.
-                                    if sync_requests == 1 { debug_enabled = false; }
+                                    if sync_requests == 1 {
+                                        debug_enabled = false;
+                                    }
                                     None
                                 } else {
-                                    Some(Packet::new(MessageType::Error, packet.session, 4, 0, vec![1, 0]))
+                                    Some(Packet::new(
+                                        MessageType::Error,
+                                        packet.session,
+                                        4,
+                                        0,
+                                        vec![1, 0],
+                                    ))
                                 }
                             }
                             MessageType::Hello => {
                                 last_hello = Instant::now();
-                                if active_since.is_some() { active_probes += 1; }
+                                if active_since.is_some() {
+                                    active_probes += 1;
+                                }
                                 let mut payload = vec![0; 16];
                                 // A preserves ready during the active session.
                                 payload[0] = 1;
                                 Some(Packet::new(MessageType::Status, 0, 4, 0, payload))
                             }
                             MessageType::Start => Some(Packet::new(
-                                MessageType::Ready, packet.session, 4, 0, vec![])),
+                                MessageType::Ready,
+                                packet.session,
+                                4,
+                                0,
+                                vec![],
+                            )),
                             _ => None,
                         };
                         if let Some(reply) = reply {
@@ -1024,9 +1415,9 @@ mod tests {
                     LinkEvent::State(LinkState::Connected) if !began => {
                         began = true;
                         gate.store(true, Ordering::Release);
-                        commands.send(LinkCommand::Begin).unwrap();
+                        commands.send(LinkCommand::Begin { generation: 1 }).unwrap();
                     }
-                    LinkEvent::CaptureAuthorized => active_since = Some(Instant::now()),
+                    LinkEvent::CaptureAuthorized { .. } => active_since = Some(Instant::now()),
                     LinkEvent::State(LinkState::Error(error)) => errors.push(error),
                     _ => {}
                 }
@@ -1036,7 +1427,9 @@ mod tests {
                     timed_out = true;
                     break;
                 }
-                if started.elapsed() >= Duration::from_millis(2200) { break; }
+                if started.elapsed() >= Duration::from_millis(2200) {
+                    break;
+                }
             }
         }
         let still_authorized = gate.load(Ordering::Acquire);
@@ -1044,21 +1437,29 @@ mod tests {
         lease.store(0, Ordering::Release);
         thread::sleep(Duration::from_millis(30));
         for event in event_rx.try_iter() {
-            if let LinkEvent::State(LinkState::Error(error)) = event { errors.push(error); }
+            if let LinkEvent::State(LinkState::Error(error)) = event {
+                errors.push(error);
+            }
         }
         commands.send(LinkCommand::Shutdown).unwrap();
         worker.join().unwrap();
         assert!(active_since.is_some(), "capture never started");
-        assert!(!timed_out, "A would expire B STATUS freshness during capture");
+        assert!(
+            !timed_out,
+            "A would expire B STATUS freshness during capture"
+        );
         assert!(active_probes >= 4, "capture must keep probing peer status");
-        assert!(sync_requests >= 2, "debug must recover after the peer clears its setting");
+        assert!(
+            sync_requests >= 2,
+            "debug must recover after the peer clears its setting"
+        );
         assert!(still_authorized);
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     }
 
     #[cfg(unix)]
     #[test]
-    fn activation_timeout_is_reported_once_and_revokes_the_gate() {
+    fn peer_timeout_during_recovery_start_does_not_begin_another_probe() {
         use serialport::SerialPort;
 
         let (mut remote, local) = serialport::TTYPort::pair().unwrap();
@@ -1079,6 +1480,9 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut decoder = CdcDecoder::default();
         let mut began = false;
+        let mut recovery_started = false;
+        let mut status_epoch = 4;
+        let mut waiting_count = 0;
         let mut timeout_count = 0;
         let mut observe_until = None;
         while Instant::now() < deadline {
@@ -1087,16 +1491,29 @@ mod tests {
             if let Ok(count) = remote.read(&mut buf) {
                 for &byte in &buf[..count] {
                     if let Some(Ok(packet)) = decoder.push(byte) {
-                        if packet.kind == MessageType::Hello {
-                            let mut payload = vec![0; 16];
-                            payload[0] = 1;
-                            remote
-                                .write_all(
-                                    &Packet::new(MessageType::Status, 0, 4, 0, payload)
-                                        .encode_cdc()
-                                        .unwrap(),
-                                )
-                                .unwrap();
+                        let reply = match packet.kind {
+                            MessageType::Hello => {
+                                let mut payload = vec![0; 16];
+                                payload[0] = 1;
+                                Some(Packet::new(
+                                    MessageType::Status,
+                                    0,
+                                    status_epoch,
+                                    0,
+                                    payload,
+                                ))
+                            }
+                            MessageType::Start if recovery_started => Some(Packet::new(
+                                MessageType::Error,
+                                packet.session,
+                                status_epoch,
+                                0,
+                                vec![3, 0],
+                            )),
+                            _ => None,
+                        };
+                        if let Some(reply) = reply {
+                            remote.write_all(&reply.encode_cdc().unwrap()).unwrap();
                         }
                     }
                 }
@@ -1106,10 +1523,22 @@ mod tests {
                     LinkEvent::State(LinkState::Connected) if !began => {
                         began = true;
                         gate.store(true, Ordering::Release);
-                        commands.send(LinkCommand::Begin).unwrap();
+                        commands.send(LinkCommand::Begin { generation: 1 }).unwrap();
+                    }
+                    LinkEvent::State(LinkState::TargetUsbUnavailable) => {
+                        waiting_count += 1;
+                        status_epoch = 5;
+                        gate.store(false, Ordering::Release);
+                    }
+                    LinkEvent::State(LinkState::Connected)
+                        if waiting_count == 1 && !recovery_started =>
+                    {
+                        recovery_started = true;
+                        gate.store(true, Ordering::Release);
+                        commands.send(LinkCommand::Begin { generation: 2 }).unwrap();
                     }
                     LinkEvent::State(LinkState::Error(detail))
-                        if detail == "activation timeout" =>
+                        if detail == "target USB recovery handshake failed" =>
                     {
                         timeout_count += 1;
                         observe_until = Some(Instant::now() + Duration::from_millis(50));
@@ -1124,6 +1553,11 @@ mod tests {
         commands.send(LinkCommand::Shutdown).unwrap();
         worker.join().unwrap();
         assert!(began, "fake CDC peer did not reach Connected");
+        assert!(
+            recovery_started,
+            "clean new epoch did not begin recovery capture"
+        );
+        assert_eq!(waiting_count, 1, "timeout must begin one recovery probe");
         assert_eq!(timeout_count, 1, "timeout must not spin and flood errors");
         assert!(
             !gate.load(Ordering::Acquire),

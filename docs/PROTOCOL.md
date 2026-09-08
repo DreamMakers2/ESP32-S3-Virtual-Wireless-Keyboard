@@ -73,7 +73,11 @@ STOP bypasses queued key states. A fails the current session when B changes epoc
 HELLO/STATUS run at 250 ms while idle and during capture so A can keep checking
 B status freshness. B advertises idle readiness; A preserves established peer
 readiness during an active session. Idle readiness excludes active capture;
-activating the app requires START/READY. New readiness never re-grabs the keyboard.
+activating the app requires START/READY. After a recoverable B transport reset,
+the app may retain the user's activation intent and issue a fresh START with a
+new session and the latest epoch. It re-grabs only after the matching READY,
+discards old input, and ignores keys already held when capture resumes. Pause,
+focus loss, app-to-A failure, and unrecoverable errors cancel that intent.
 Do not use CDC DTR as a substitute for the application heartbeat lease.
 
 ## Diagnostics

@@ -80,7 +80,10 @@ struct BridgeApp {
     xkb: Option<XkbHistory>,
     hid: HidState,
     link_state: LinkState,
+    activation_intent: bool,
     active: bool,
+    input_generation: u64,
+    capture_session: Option<u64>,
     had_focus: bool,
     error: Option<String>,
     started: Instant,
@@ -149,7 +152,10 @@ impl BridgeApp {
             xkb: XkbHistory::new().ok(),
             hid: HidState::default(),
             link_state: LinkState::Connecting,
+            activation_intent: false,
             active: false,
+            input_generation: 0,
+            capture_session: None,
             had_focus: false,
             error: None,
             started,
@@ -169,9 +175,7 @@ impl BridgeApp {
         }
     }
     fn activate(&mut self) {
-        if self.capture_gate.load(Ordering::Acquire)
-            || !matches!(self.link_state, LinkState::Connected)
-        {
+        if self.activation_intent || !matches!(self.link_state, LinkState::Connected) {
             return;
         }
         if self.settings.keyboard_path.is_empty() {
@@ -181,20 +185,42 @@ impl BridgeApp {
         self.error = None;
         self.clock_offset_us = None;
         self.best_sync_rtt_us = u64::MAX;
+        self.activation_intent = true;
+        self.begin_capture();
+    }
+    fn begin_capture(&mut self) {
+        if !self.activation_intent
+            || !self.had_focus
+            || !matches!(self.link_state, LinkState::Connected)
+        {
+            return;
+        }
+        self.input_generation = self.input_generation.wrapping_add(1);
+        self.capture_session = None;
         self.capture_gate.store(true, Ordering::Release);
         self.lease_ms
             .store(self.started.elapsed().as_millis() as u64, Ordering::Release);
-        let _ = self.link_tx.send(LinkCommand::Begin);
+        let _ = self.link_tx.send(LinkCommand::Begin {
+            generation: self.input_generation,
+        });
     }
-    fn stop(&mut self) {
+    fn suspend_input(&mut self) {
+        self.input_generation = self.input_generation.wrapping_add(1);
         self.capture_gate.store(false, Ordering::Release);
         self.lease_ms.store(0, Ordering::Release);
-        let _ = self.input_tx.send(InputCommand::Stop);
-        let _ = self.link_tx.send(LinkCommand::Stop);
+        let _ = self.input_tx.send(InputCommand::Stop {
+            generation: self.input_generation,
+        });
         self.active = false;
+        self.capture_session = None;
         self.hid = HidState::default();
         self.history.clear_pending_modifiers();
         self.xkb = XkbHistory::new().ok();
+    }
+    fn stop(&mut self) {
+        self.activation_intent = false;
+        self.suspend_input();
+        let _ = self.link_tx.send(LinkCommand::Stop);
     }
     fn accept_key(&mut self, code: u16, pressed: bool, received_us: u64) {
         if !self.capture_gate.load(Ordering::Acquire) {
@@ -209,6 +235,7 @@ impl BridgeApp {
         }
         if self.hid.apply(code, pressed) {
             let _ = self.link_tx.send(LinkCommand::State {
+                generation: self.input_generation,
                 modifiers: self.hid.modifiers,
                 bitmap: self.hid.bitmap,
                 press: pressed,
@@ -220,22 +247,29 @@ impl BridgeApp {
         while let Ok(event) = self.input_rx.try_recv() {
             match event {
                 InputEvent::Key {
+                    generation,
                     code,
                     pressed,
                     received_us,
-                } if self.active => self.accept_key(code, pressed, received_us),
-                InputEvent::Fault(detail) => {
+                } if self.active && generation == self.input_generation => {
+                    self.accept_key(code, pressed, received_us)
+                }
+                InputEvent::Fault { generation, detail } if generation == self.input_generation => {
                     self.error = Some(format!("Error: {detail}"));
                     self.stop();
                 }
-                InputEvent::Started => {
-                    if self.had_focus && self.capture_gate.load(Ordering::Acquire) {
+                InputEvent::Started { generation } if generation == self.input_generation => {
+                    if self.activation_intent
+                        && self.capture_session.is_some()
+                        && self.had_focus
+                        && self.capture_gate.load(Ordering::Acquire)
+                    {
                         self.active = true;
                     } else {
                         self.stop();
                     }
                 }
-                InputEvent::Stopped => {}
+                InputEvent::Stopped { generation } if generation <= self.input_generation => {}
                 _ => {}
             }
         }
@@ -253,26 +287,53 @@ impl BridgeApp {
                         self.usb_ms = Some(self.started.elapsed().as_millis());
                     }
                     self.link_state = state;
+                    if matches!(self.link_state, LinkState::TargetUsbUnavailable)
+                        && self.activation_intent
+                    {
+                        self.suspend_input();
+                    } else if matches!(self.link_state, LinkState::Connected)
+                        && self.activation_intent
+                        && !self.capture_gate.load(Ordering::Acquire)
+                    {
+                        self.begin_capture();
+                    }
                 }
-                LinkEvent::CaptureAuthorized => {
-                    if !self.had_focus || !self.capture_gate.load(Ordering::Acquire) {
+                LinkEvent::CaptureAuthorized {
+                    session,
+                    generation,
+                } => {
+                    if generation != self.input_generation {
+                        continue;
+                    }
+                    if !self.activation_intent
+                        || !self.had_focus
+                        || !self.capture_gate.load(Ordering::Acquire)
+                    {
                         self.stop();
                     } else {
+                        self.capture_session = Some(session);
                         self.capture_gate.store(true, Ordering::Release);
                         self.lease_ms
                             .store(self.started.elapsed().as_millis() as u64, Ordering::Release);
-                        let _ = self.input_tx.send(InputCommand::Start(
-                            self.settings.keyboard_path.clone().into(),
-                        ));
+                        let _ = self.input_tx.send(InputCommand::Start {
+                            path: self.settings.keyboard_path.clone().into(),
+                            generation,
+                        });
                     }
                 }
                 LinkEvent::Ack {
+                    session,
+                    generation,
                     sequence: _sequence,
                     press,
                     captured_us,
                     hid_us,
                 } => {
-                    if self.settings.debug && press {
+                    if self.capture_session == Some(session)
+                        && generation == self.input_generation
+                        && self.settings.debug
+                        && press
+                    {
                         if let (Some(offset), Some(hid)) = (self.clock_offset_us, hid_us) {
                             let value = ((hid as f64 - offset) - captured_us as f64) / 1000.0;
                             if value.is_finite() && value >= 0.0 {
@@ -347,6 +408,16 @@ impl BridgeApp {
                     )
                 }
             }
+            LinkState::TargetUsbUnavailable => (
+                Color32::from_rgb(255, 150, 0),
+                "Target USB unavailable - waiting for reconnect",
+                blink(450, 550),
+            ),
+            LinkState::Connected if self.activation_intent && !self.active => (
+                Color32::from_rgb(0, 96, 255),
+                "Starting capture",
+                blink(300, 300),
+            ),
             LinkState::Connected if !self.active => (
                 Color32::from_rgb(0, 64, 0),
                 "Paused - All devices connected - No keypresses are captured or transmitted",
@@ -557,24 +628,34 @@ impl eframe::App for BridgeApp {
                         );
                     }
                     if !self.active {
+                        let reconnecting = self.activation_intent
+                            && matches!(self.link_state, LinkState::TargetUsbUnavailable);
+                        let starting = self.activation_intent && !reconnecting;
+                        let title = if reconnecting {
+                            "Target USB unavailable - waiting for reconnect"
+                        } else if starting {
+                            "starting capture..."
+                        } else {
+                            "paused - click to activate"
+                        };
+                        let detail = if reconnecting {
+                            "keypresses are discarded until the target reconnects"
+                        } else if starting {
+                            "waiting for exclusive keyboard access"
+                        } else {
+                            "no keypresses are captured or transmitted"
+                        };
                         let mut overlay_ui =
                             ui.new_child(egui::UiBuilder::new().max_rect(history_rect));
                         overlay_ui.vertical_centered(|ui| {
                             ui.add_space(history_rect.height() * 0.36);
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new("paused - click to activate")
-                                        .size(22.0)
-                                        .strong(),
-                                )
-                                .selectable(false),
+                                egui::Label::new(RichText::new(title).size(22.0).strong())
+                                    .selectable(false),
                             );
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new("no keypresses are captured or transmitted")
-                                        .size(15.0),
-                                )
-                                .selectable(false),
+                                egui::Label::new(RichText::new(detail).size(15.0))
+                                    .selectable(false),
                             );
                         });
                     }
@@ -583,13 +664,16 @@ impl eframe::App for BridgeApp {
                     // Leave the scrollbar's gutter to its own click/drag handler.
                     let mut activation_rect = input_rect;
                     activation_rect.max.x = history_rect.right();
-                    let response =
-                        ui.interact(activation_rect, ui.id().with("input-surface"), Sense::click());
+                    let response = ui.interact(
+                        activation_rect,
+                        ui.id().with("input-surface"),
+                        Sense::click(),
+                    );
                     if response.clicked() {
                         self.activate();
                     }
                     response.context_menu(|ui| {
-                        if self.active {
+                        if self.activation_intent {
                             if ui.button("Pause").clicked() {
                                 self.stop();
                                 ui.close();
@@ -709,7 +793,7 @@ mod lifecycle_tests {
         let (input_tx, _input_commands) = mpsc::channel();
         let (_input_events, input_rx) = mpsc::channel();
         let (link_tx, link_commands) = mpsc::channel();
-        let (_link_events, link_rx) = mpsc::channel();
+        let (link_events, link_rx) = mpsc::channel();
         let capture_gate = Arc::new(AtomicBool::new(false));
         let lease_ms = Arc::new(AtomicU64::new(0));
         let started = Instant::now();
@@ -728,8 +812,11 @@ mod lifecycle_tests {
             xkb: XkbHistory::new().ok(),
             hid: HidState::default(),
             link_state: LinkState::Connecting,
+            activation_intent: false,
             active: false,
-            had_focus: false,
+            input_generation: 0,
+            capture_session: None,
+            had_focus: true,
             error: None,
             started,
             app_start_ms,
@@ -750,12 +837,30 @@ mod lifecycle_tests {
         app.link_state = LinkState::Connected;
         app.activate();
         app.activate();
-        assert!(matches!(link_commands.try_recv(), Ok(LinkCommand::Begin)));
+        assert!(matches!(
+            link_commands.try_recv(),
+            Ok(LinkCommand::Begin { generation: 1 })
+        ));
+        assert!(link_commands.try_recv().is_err());
+        link_events
+            .send(LinkEvent::CaptureAuthorized {
+                session: 99,
+                generation: 0,
+            })
+            .unwrap();
+        app.drain_events();
+        assert!(
+            app.activation_intent,
+            "stale authorization must not revoke intent"
+        );
         assert!(link_commands.try_recv().is_err());
         app.stop();
         assert!(!app.capture_gate.load(Ordering::Acquire));
         assert!(matches!(link_commands.try_recv(), Ok(LinkCommand::Stop)));
         app.activate();
-        assert!(matches!(link_commands.try_recv(), Ok(LinkCommand::Begin)));
+        assert!(matches!(
+            link_commands.try_recv(),
+            Ok(LinkCommand::Begin { generation: 3 })
+        ));
     }
 }

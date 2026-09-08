@@ -14,20 +14,28 @@ use std::{
 
 #[derive(Clone, Debug)]
 pub enum InputCommand {
-    Start(PathBuf),
-    Stop,
+    Start { path: PathBuf, generation: u64 },
+    Stop { generation: u64 },
     Shutdown,
 }
 #[derive(Clone, Debug)]
 pub enum InputEvent {
-    Started,
+    Started {
+        generation: u64,
+    },
     Key {
+        generation: u64,
         code: u16,
         pressed: bool,
         received_us: u64,
     },
-    Fault(String),
-    Stopped,
+    Fault {
+        generation: u64,
+        detail: String,
+    },
+    Stopped {
+        generation: u64,
+    },
 }
 
 pub fn spawn(
@@ -38,52 +46,76 @@ pub fn spawn(
 ) {
     thread::spawn(move || {
         let mut device: Option<Device> = None;
+        let mut generation = 0;
         let mut preheld = HashSet::new();
         let mut stopping = false;
         loop {
             while let Ok(command) = command_rx.try_recv() {
                 match command {
-                    InputCommand::Start(path) if device.is_none() => match Device::open(&path) {
-                        Ok(mut opened) => match opened.grab() {
-                            Ok(()) if gate.load(Ordering::Acquire) => {
-                                match opened.get_key_state().and_then(|keys| {
-                                    opened.set_nonblocking(true)?;
-                                    Ok(keys)
-                                }) {
-                                    Ok(keys) => {
-                                        preheld = keys.iter().map(|key| key.code()).collect();
-                                        device = Some(opened);
-                                        let _ = event_tx.send(InputEvent::Started);
-                                    }
-                                    Err(error) => {
-                                        let _ = opened.ungrab();
-                                        gate.store(false, Ordering::Release);
-                                        let _ = event_tx.send(InputEvent::Fault(format!(
-                                            "input setup: {error}"
-                                        )));
+                    InputCommand::Start {
+                        path,
+                        generation: next_generation,
+                    } => {
+                        if next_generation < generation {
+                            continue;
+                        }
+                        if let Some(mut opened) = device.take() {
+                            let _ = opened.ungrab();
+                        }
+                        generation = next_generation;
+                        stopping = false;
+                        preheld.clear();
+                        match Device::open(&path) {
+                            Ok(mut opened) => match opened.grab() {
+                                Ok(()) if gate.load(Ordering::Acquire) => {
+                                    match opened.get_key_state().and_then(|keys| {
+                                        opened.set_nonblocking(true)?;
+                                        Ok(keys)
+                                    }) {
+                                        Ok(keys) => {
+                                            preheld = keys.iter().map(|key| key.code()).collect();
+                                            device = Some(opened);
+                                            let _ =
+                                                event_tx.send(InputEvent::Started { generation });
+                                        }
+                                        Err(error) => {
+                                            let _ = opened.ungrab();
+                                            gate.store(false, Ordering::Release);
+                                            let _ = event_tx.send(InputEvent::Fault {
+                                                generation,
+                                                detail: format!("input setup: {error}"),
+                                            });
+                                        }
                                     }
                                 }
-                            }
-                            Ok(()) => {
-                                let _ = opened.ungrab();
-                            }
+                                Ok(()) => {
+                                    let _ = opened.ungrab();
+                                }
+                                Err(error) => {
+                                    let _ = event_tx.send(InputEvent::Fault {
+                                        generation,
+                                        detail: format!("input grab: {error}"),
+                                    });
+                                }
+                            },
                             Err(error) => {
-                                let _ = event_tx
-                                    .send(InputEvent::Fault(format!("input grab: {error}")));
+                                let _ = event_tx.send(InputEvent::Fault {
+                                    generation,
+                                    detail: format!("input access: {error}"),
+                                });
                             }
-                        },
-                        Err(error) => {
-                            let _ =
-                                event_tx.send(InputEvent::Fault(format!("input access: {error}")));
                         }
-                    },
-                    InputCommand::Stop => {
+                    }
+                    InputCommand::Stop {
+                        generation: next_generation,
+                    } if next_generation >= generation => {
+                        generation = next_generation;
                         if let Some(mut opened) = device.take() {
                             let _ = opened.ungrab();
                         }
                         preheld.clear();
                         stopping = false;
-                        let _ = event_tx.send(InputEvent::Stopped);
+                        let _ = event_tx.send(InputEvent::Stopped { generation });
                     }
                     InputCommand::Shutdown => return,
                     _ => {}
@@ -93,7 +125,7 @@ pub fn spawn(
                 if let Some(mut opened) = device.take() {
                     let _ = opened.ungrab();
                 }
-                let _ = event_tx.send(InputEvent::Stopped);
+                let _ = event_tx.send(InputEvent::Stopped { generation });
                 stopping = false;
             }
             let mut lost = None;
@@ -108,6 +140,7 @@ pub fn spawn(
                                 let code = key.code();
                                 if should_forward(&mut preheld, code, value, &gate) {
                                     let _ = event_tx.send(InputEvent::Key {
+                                        generation,
                                         code,
                                         pressed: value == 1,
                                         received_us: anchor.elapsed().as_micros() as u64,
@@ -123,7 +156,10 @@ pub fn spawn(
                 lost = result;
             }
             if let Some(error) = lost {
-                let _ = event_tx.send(InputEvent::Fault(format!("input lost: {error}")));
+                let _ = event_tx.send(InputEvent::Fault {
+                    generation,
+                    detail: format!("input lost: {error}"),
+                });
                 if let Some(mut opened) = device.take() {
                     let _ = opened.ungrab();
                 }
